@@ -3,7 +3,7 @@
 # de build/deploy. Roda com URL fictícia e `npm` falso; falha se a senha aparecer
 # ou se alguém reintroduzir um echo/printf/set -x de variável de conexão.
 set -u
-cd "$(dirname "$0")/../../.." || exit 2
+cd "$(dirname "$0")/../.." || exit 2
 
 SENHA='SenhaFicticia@123!'
 URL="postgresql://usuario_x:${SENHA}@host.exemplo:5432/db?sslmode=require"
@@ -33,6 +33,12 @@ if grep -nE '(echo|printf)[^|]*\$\{?(DATABASE_URL|DATABASE_CONNECTION_URI|CACHE_
 fi
 if grep -nE '(^|[[:space:]])set[[:space:]]+-[a-z]*x' Docker/scripts/*.sh; then
     echo "FALHA: 'set -x' imprimiria variáveis expandidas"; falhas=$((falhas+1))
+fi
+
+# 3) o Dockerfile aplica `chmod +x` e `dos2unix` em ./Docker/scripts/* — subpasta ali
+# quebra o build (dos2unix recusa diretório). Guard e testes moram em tests/security/.
+if find Docker/scripts -mindepth 1 -type d | grep -q .; then
+    echo "FALHA: Docker/scripts/ não pode ter subpastas (quebra o dos2unix do Dockerfile)"; falhas=$((falhas+1))
 fi
 
 [ "$falhas" -eq 0 ] && echo "TUDO OK" && exit 0
