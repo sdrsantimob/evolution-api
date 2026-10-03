@@ -16,3 +16,10 @@ export_env_vars() {
         exit 1
     fi
 }
+
+
+# Devolve a URL com a senha mascarada (usuario:***@host). Os logs de build/deploy
+# são lidos por mais gente do que o cofre de variáveis — credencial nunca entra neles.
+redact_url() {
+    printf '%s' "$1" | sed -E 's#(://[^:/@]*):.*@#\1:***@#'
+}
