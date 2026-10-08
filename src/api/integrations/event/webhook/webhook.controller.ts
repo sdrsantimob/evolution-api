@@ -116,7 +116,8 @@ export class WebhookController extends EventController implements EventControlle
           const logData = {
             local: `${origin}.sendData-Webhook`,
             url: baseURL,
-            ...webhookData,
+            event: webhookData.event,
+            instance: webhookData.instance,
           };
 
           this.logger.log(logData);
@@ -161,7 +162,8 @@ export class WebhookController extends EventController implements EventControlle
           const logData = {
             local: `${origin}.sendData-Webhook-Global`,
             url: globalURL,
-            ...webhookData,
+            event: webhookData.event,
+            instance: webhookData.instance,
           };
 
           this.logger.log(logData);
