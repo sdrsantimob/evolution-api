@@ -704,13 +704,11 @@ export class BaileysStartupService extends ChannelStartupService {
     this.eventHandler();
 
     this.client.ws.on('CB:call', (packet) => {
-      console.log('CB:call', packet);
       const payload = { event: 'CB:call', packet: packet };
       this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
     });
 
     this.client.ws.on('CB:ack,class:call', (packet) => {
-      console.log('CB:ack,class:call', packet);
       const payload = { event: 'CB:ack,class:call', packet: packet };
       this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
     });
@@ -897,7 +895,6 @@ export class BaileysStartupService extends ChannelStartupService {
     'contacts.update': async (contacts: Partial<Contact>[]) => {
       const contactsRaw: { remoteJid: string; pushName?: string; profilePicUrl?: string; instanceId: string }[] = [];
       for await (const contact of contacts) {
-        this.logger.debug(`Updating contact: ${JSON.stringify(contact, null, 2)}`);
         contactsRaw.push({
           remoteJid: contact.id,
           pushName: contact?.name ?? contact?.verifiedName,
@@ -941,9 +938,9 @@ export class BaileysStartupService extends ChannelStartupService {
     }) => {
       try {
         if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
-          console.log('received on-demand history sync, messages=', messages);
+          this.logger.verbose(`received on-demand history sync, messages=${messages.length}`);
         }
-        console.log(
+        this.logger.verbose(
           `recv ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (is latest: ${isLatest}, progress: ${progress}%), type: ${syncType}`,
         );
 
@@ -1099,7 +1096,7 @@ export class BaileysStartupService extends ChannelStartupService {
               ].some((err) => param?.includes?.(err)),
             )
           ) {
-            this.logger.warn(`Message ignored with messageStubParameters: ${JSON.stringify(received, null, 2)}`);
+            this.logger.warn(`Message ignored with messageStubParameters (id: ${received.key?.id})`);
             continue;
           }
           if (received.message?.conversation || received.message?.extendedTextMessage?.text) {
@@ -1108,14 +1105,14 @@ export class BaileysStartupService extends ChannelStartupService {
             if (text == 'requestPlaceholder' && !requestId) {
               const messageId = await this.client.requestPlaceholderResend(received.key);
 
-              console.log('requested placeholder resync, id=', messageId);
+              this.logger.verbose(`requested placeholder resync, id=${messageId}`);
             } else if (requestId) {
-              console.log('Message received from phone, id=', requestId, received);
+              this.logger.verbose(`Message received from phone, id=${requestId}`);
             }
 
             if (text == 'onDemandHistSync') {
               const messageId = await this.client.fetchMessageHistory(50, received.key, received.messageTimestamp!);
-              console.log('requested on-demand sync, id=', messageId);
+              this.logger.verbose(`requested on-demand sync, id=${messageId}`);
             }
           }
 
@@ -1196,7 +1193,7 @@ export class BaileysStartupService extends ChannelStartupService {
                   data: { name: received.pushName },
                 });
               } catch {
-                console.log(`Chat insert record ignored: ${received.key.remoteJid} - ${this.instanceId}`);
+                this.logger.verbose(`Chat insert record ignored - ${this.instanceId}`);
               }
             }
           }
@@ -1472,13 +1469,10 @@ export class BaileysStartupService extends ChannelStartupService {
             }
           }
 
-          this.logger.verbose(messageRaw);
-
           sendTelemetry(`received.message.${messageRaw.messageType ?? 'unknown'}`);
           if (messageRaw.key.remoteJid?.includes('@lid') && messageRaw.key.remoteJidAlt) {
             messageRaw.key.remoteJid = messageRaw.key.remoteJidAlt;
           }
-          console.log(messageRaw);
 
           this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
 
@@ -1556,7 +1550,7 @@ export class BaileysStartupService extends ChannelStartupService {
     },
 
     'messages.update': async (args: { update: Partial<WAMessage>; key: WAMessageKey }[], settings: any) => {
-      this.logger.verbose(`Update messages ${JSON.stringify(args, undefined, 2)}`);
+      this.logger.verbose(`Update messages: ${args.length}`);
 
       const readChatToUpdate: Record<string, true> = {}; // {remoteJid: true}
 
@@ -1570,7 +1564,6 @@ export class BaileysStartupService extends ChannelStartupService {
         const cached = await this.baileysCache.get(updateKey);
 
         const secondsSinceEpoch = Math.floor(Date.now() / 1000);
-        console.log('CACHE:', { cached, updateKey, messageTimestamp: update.messageTimestamp, secondsSinceEpoch });
 
         if (
           (update.messageTimestamp && update.messageTimestamp === cached) ||
@@ -1646,7 +1639,7 @@ export class BaileysStartupService extends ChannelStartupService {
             findMessage = messages[0] || null;
 
             if (!findMessage?.id) {
-              this.logger.warn(`Original message not found for update. Skipping. Key: ${JSON.stringify(key)}`);
+              this.logger.warn(`Original message not found for update. Skipping. Key id: ${key?.id}`);
               continue;
             }
             message.messageId = findMessage.id;
@@ -1719,7 +1712,7 @@ export class BaileysStartupService extends ChannelStartupService {
               try {
                 await this.prismaRepository.chat.update({ where: { id: existingChat.id }, data: chatToInsert });
               } catch {
-                console.log(`Chat insert record ignored: ${chatToInsert.remoteJid} - ${chatToInsert.instanceId}`);
+                this.logger.verbose(`Chat insert record ignored - ${chatToInsert.instanceId}`);
               }
             }
           }
@@ -2540,8 +2533,6 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
-      this.logger.verbose(messageSent);
-
       this.sendDataWebhook(Events.SEND_MESSAGE, messageRaw);
 
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && isIntegration) {
@@ -3153,7 +3144,7 @@ export class BaileysStartupService extends ChannelStartupService {
         });
 
         outputAudioStream.on('error', (error) => {
-          console.log('error', error);
+          console.error('error', error);
           reject(error);
         });
 
@@ -3196,7 +3187,7 @@ export class BaileysStartupService extends ChannelStartupService {
           ])
           .pipe(outputAudioStream, { end: true })
           .on('error', function (error) {
-            console.log('error', error);
+            console.error('error', error);
             reject(error);
           });
       });
@@ -4309,7 +4300,6 @@ export class BaileysStartupService extends ChannelStartupService {
 
     if ((cacheConf?.REDIS?.ENABLED && cacheConf?.REDIS?.URI !== '') || cacheConf?.LOCAL?.ENABLED) {
       if (await groupMetadataCache?.has(groupJid)) {
-        console.log(`Cache request for group: ${groupJid}`);
         const meta = await groupMetadataCache.get(groupJid);
 
         if (Date.now() - meta.timestamp > 3600000) {
@@ -4319,7 +4309,6 @@ export class BaileysStartupService extends ChannelStartupService {
         return meta.data;
       }
 
-      console.log(`Cache request for group: ${groupJid} - not found`);
       return await this.updateGroupMetadataCache(groupJid);
     }
 
@@ -4860,7 +4849,6 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   public async baileysSendNode(stanza: any) {
-    console.log('stanza', JSON.stringify(stanza));
     const response = await this.client.sendNode(stanza);
 
     return response;
@@ -4944,7 +4932,7 @@ export class BaileysStartupService extends ChannelStartupService {
         catalog: productsCatalog,
       };
     } catch (error) {
-      console.log(error);
+      console.error(error);
       return { wuid: jid, name: null, isBusiness: false };
     }
   }
