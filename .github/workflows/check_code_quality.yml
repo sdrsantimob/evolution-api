@@ -40,3 +40,6 @@ jobs:
 
     - name: Check build
       run: npm run build
+
+    - name: Test history phone pairing (WA-34)
+      run: npx tsx --test tests/historyPhoneByLid.test.ts

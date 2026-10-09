@@ -82,7 +82,7 @@ import { createId as cuid } from '@paralleldrive/cuid2';
 import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
-import { attachPhone, buildPhoneByLid, needsPhone } from '@utils/historyPhoneByLid';
+import { attachPhone, HistoryPhoneBook, needsPhone } from '@utils/historyPhoneByLid';
 import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
 import { status } from '@utils/renderStatus';
@@ -250,6 +250,10 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly msgRetryCounterCache: CacheStore = new NodeCache();
   private readonly userDevicesCache: CacheStore = new NodeCache({ stdTTL: 300000, useClones: false });
   private endSession = false;
+  // [WA-34:inicio] Pares telefone/identificador do histórico desta conexão. Só memória: não é
+  // gravado em lugar nenhum, não vai para registro e é esquecido quando a conexão é encerrada.
+  private readonly historyPhoneBook = new HistoryPhoneBook();
+  // [WA-34:fim]
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
 
@@ -456,6 +460,10 @@ export class BaileysStartupService extends ChannelStartupService {
             { instance: this.instance.name, status: 'closed' },
           );
         }
+
+        // [WA-34:inicio] Conexão encerrada de vez: os pares lembrados do histórico são esquecidos.
+        this.historyPhoneBook.clear();
+        // [WA-34:fim]
 
         this.eventEmitter.emit('logout.instance', this.instance.name, 'inner');
         this.client?.ws?.close();
@@ -973,8 +981,10 @@ export class BaileysStartupService extends ChannelStartupService {
         }
 
         // [WA-34:inicio] Par telefone/identificador que o WhatsApp manda junto do histórico.
-        // Só existe dentro deste pacote: não é gravado em banco e não é escrito em log.
-        const phoneByLid = buildPhoneByLid(contacts);
+        // Fica só na memória desta conexão: não é gravado em banco e não é escrito em registro.
+        this.historyPhoneBook.remember(contacts);
+        const lidsWithoutPhone = new Set<string>();
+        const lookupPhone = (lid: string) => this.client?.signalRepository?.lidMapping?.getPNForLID(lid);
         // [WA-34:fim]
 
         const chatsRaw: { remoteJid: string; instanceId: string; name?: string }[] = [];
@@ -1048,7 +1058,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
           // [WA-34:inicio] Conversa endereçada só pelo identificador novo: anexa o telefone à chave.
           if (needsPhone(m.key)) {
-            attachPhone(m.key, await this.phoneForLidInHistory(m.key.remoteJid, phoneByLid));
+            attachPhone(m.key, await this.historyPhoneBook.phoneFor(m.key.remoteJid, lookupPhone, lidsWithoutPhone));
           }
           // [WA-34:fim]
 
@@ -2016,30 +2026,6 @@ export class BaileysStartupService extends ChannelStartupService {
       });
     });
   }
-
-  // [WA-34:inicio] Telefone de uma conversa do histórico endereçada pelo identificador novo.
-  // Primeiro o par que veio no próprio pacote; sem ele, o mapa que a biblioteca mantém na sessão.
-  // O resultado (inclusive "não sei") fica no mapa do pacote, para não consultar duas vezes.
-  // Não grava nada e não escreve em log: sem telefone, a mensagem segue como antes.
-  private async phoneForLidInHistory(lid: string, phoneByLid: Map<string, string | null>): Promise<string | null> {
-    const key = jidNormalizedUser(lid);
-    if (phoneByLid.has(key)) {
-      return phoneByLid.get(key);
-    }
-
-    let phone: string | null = null;
-    try {
-      const mapped = await this.client?.signalRepository?.lidMapping?.getPNForLID(key);
-      const normalized = mapped ? jidNormalizedUser(mapped) : null;
-      phone = isPnUser(normalized) ? normalized : null;
-    } catch {
-      phone = null;
-    }
-
-    phoneByLid.set(key, phone);
-    return phone;
-  }
-  // [WA-34:fim]
 
   private historySyncNotification(msg: proto.Message.IHistorySyncNotification) {
     const instance: InstanceDto = { instanceName: this.instance.name };

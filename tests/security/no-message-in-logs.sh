@@ -7,6 +7,8 @@
 # chamada de log voltar a receber o objeto da mensagem. Uso:
 #   bash tests/security/no-message-in-logs.sh [raiz-do-repositório]
 set -u
+# Caminho absoluto deste script, resolvido ANTES de mudar de pasta (o item 6 lê o próprio arquivo).
+ESTE="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 RAIZ="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 cd "$RAIZ" || exit 2
 
@@ -51,22 +53,34 @@ acusar "JSON.stringify dentro de chamada de log (serializa o objeto inteiro)" < 
 acusar "log de webhook com o corpo da mensagem ou a chave" < <(grep -nE -A5 'const logData = \{' "$WEBHOOK" 2>/dev/null | grep -E 'webhookData,|[^a-zA-Z_.]data[,:]|apikey')
 
 # 5) [WA-34] o trecho que anexa o telefone às mensagens do histórico não escreve em log e
-#    não grava em banco — o telefone só viaja dentro do pacote que já carrega as mensagens.
+#    não grava em banco, cache nem arquivo — o telefone só fica na memória da conexão e dentro
+#    do pacote que já carrega as mensagens.
 HIST=src/utils/historyPhoneByLid.ts
 [ -f "$HIST" ] || { echo "FALHA: $HIST não existe (o guard perdeu o alvo — atualize a lista)"; falhas=$((falhas+1)); }
-marcas=$(grep -c '\[WA-34:inicio\]' "$BAILEYS" 2>/dev/null || echo 0)
-fins=$(grep -c '\[WA-34:fim\]' "$BAILEYS" 2>/dev/null || echo 0)
-if [ "$marcas" -lt 3 ] || [ "$marcas" -ne "$fins" ]; then
+# `grep -c` sai 1 quando conta zero; a contagem é lida sem `|| echo`, para o zero não virar "0\n0".
+marcas=$(grep -c '\[WA-34:inicio\]' "$BAILEYS" 2>/dev/null); marcas=${marcas:-0}
+fins=$(grep -c '\[WA-34:fim\]' "$BAILEYS" 2>/dev/null); fins=${fins:-0}
+case "$marcas$fins" in *[!0-9]*) marcas=0; fins=0 ;; esac
+if [ "$marcas" -lt 4 ] || [ "$marcas" -ne "$fins" ]; then
     echo "FALHA: marcadores [WA-34:inicio]/[WA-34:fim] ausentes ou desbalanceados em $BAILEYS ($marcas/$fins) — o guard perdeu o alvo"
     falhas=$((falhas+1))
 fi
-trecho_wa34() { awk '/\[WA-34:inicio\]/{d=1} d{print FILENAME":"FNR": "$0} /\[WA-34:fim\]/{d=0}' "$BAILEYS"; }
-acusar "[WA-34] trecho do telefone no histórico escreve em log" < <(trecho_wa34 | grep -vE ':[[:space:]]*//' | grep -E '(logger\.|console\.|process\.stdout|process\.stderr)')
-acusar "[WA-34] trecho do telefone no histórico grava em banco ou cache" < <(trecho_wa34 | grep -vE ':[[:space:]]*//' | grep -E '(prismaRepository|\.createMany\(|\.create\(|\.upsert\(|saveOnWhatsappCache|cache\.set)')
-acusar "[WA-34] $HIST escreve em log, banco, cache ou arquivo" < <(grep -nE '(logger\.|console\.|process\.stdout|process\.stderr|prisma|fs\.|writeFile|cache)' "$HIST" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+# Linhas do trecho marcado, sem as que são só comentário (âncora em arquivo:linha: — um `://`
+# no meio do código não conta como comentário).
+trecho_wa34() {
+    awk '/\[WA-34:inicio\]/{d=1} d{print FILENAME":"FNR": "$0} /\[WA-34:fim\]/{d=0}' "$BAILEYS" \
+        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'
+}
+GRAVA='(prismaRepository|\.createMany\(|\.create\(|\.upsert\(|\.update(Many)?\(|saveOnWhatsappCache|storeLIDPNMappings|\.hSet\(|cache\.set|writeFile|appendFile)'
+acusar "[WA-34] trecho do telefone no histórico escreve em log" < <(trecho_wa34 | grep -E '(logger\.|console\.|process\.stdout|process\.stderr)')
+acusar "[WA-34] trecho do telefone no histórico grava em banco, cache ou arquivo" < <(trecho_wa34 | grep -E "$GRAVA")
+acusar "[WA-34] $HIST escreve em log, banco, cache ou arquivo" < <(grep -niE '(logger\.|console\.|process\.stdout|process\.stderr|prisma|fs\.|writeFile|appendFile|nodecache|redis|\.hSet\()' "$HIST" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+# Fora do trecho marcado: nenhuma chamada de log, em nenhum dos arquivos de canal, pode levar
+# o telefone anexado, o livro de pares ou o lote de mensagens do histórico.
+acusar "[WA-34] chamada de log leva o telefone anexado, os pares ou o lote do histórico" < <(grep -nE "${LOG}[^\n]*(remoteJidAlt|historyPhoneBook|phoneByLid|phoneNumber|messagesRaw|lidsWithoutPhone)" "$BAILEYS" "$META" "$EVO" "$WEBHOOK" 2>/dev/null)
 
 # 6) o guard não pode voltar a contar falha dentro de subshell
-if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$0" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$ESTE" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
     echo "FALHA: este guard chama \`acusar\` no fim de um pipe — a falha não seria contada"
     falhas=$((falhas+1))
 fi
