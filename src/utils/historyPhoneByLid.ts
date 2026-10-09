@@ -53,12 +53,94 @@ export function attachPhone(key: HistoryKey, phone: string | null | undefined): 
   return true;
 }
 
+// Mensagem AO VIVO de conversa endereçada pelo identificador novo: quem recebe o aviso precisa
+// dos DOIS endereços para saber que é a mesma conversa que o histórico trouxe só pelo
+// identificador. Devolve uma cópia com o telefone em `remoteJid` (como o aviso já mandava) e o
+// identificador em `remoteJidAlt`. Sem identificador, devolve a própria mensagem, intocada.
+export function withBothAddresses<T extends { key?: HistoryKey | null }>(
+  message: T,
+  lid: string | null | undefined,
+): T {
+  if (!message?.key || !asLid(lid) || !asPhone(message.key.remoteJid)) return message;
+  return { ...message, key: { ...message.key, remoteJidAlt: jidNormalizedUser(lid) } };
+}
+
+// O identificador de uma mensagem ao vivo que vai ter o endereço trocado pelo telefone.
+export function lidBeforeSwap(key: HistoryKey | undefined | null): string | null {
+  if (!key) return null;
+  return asLid(key.remoteJid) && asPhone(key.remoteJidAlt) ? (key.remoteJid as string) : null;
+}
+
+// Contagens do que o WhatsApp entregou num pacote de histórico e do que foi possível anexar.
+// SÓ números: nenhum endereço, nome ou texto entra aqui.
+export type HistoryStats = Record<
+  | 'chats'
+  | 'chatsLid'
+  | 'chatsPhone'
+  | 'contacts'
+  | 'contactsWithPair'
+  | 'pairsRemembered'
+  | 'messages'
+  | 'messagesLid'
+  | 'messagesWithPhone'
+  | 'attachedFromPacket'
+  | 'attachedFromMap'
+  | 'unresolved'
+  | 'mapHit'
+  | 'mapMiss'
+  | 'mapError'
+  | 'packetsBootstrap'
+  | 'packetsRecent'
+  | 'packetsFull'
+  | 'packetsPushName'
+  | 'packetsOther',
+  number
+>;
+
+// syncType do WhatsApp: 0 = carga inicial · 2 = histórico completo · 3 = recente · 4 = nomes.
+export function newHistoryStats(syncType?: number | null): HistoryStats {
+  return {
+    chats: 0,
+    chatsLid: 0,
+    chatsPhone: 0,
+    contacts: 0,
+    contactsWithPair: 0,
+    pairsRemembered: 0,
+    messages: 0,
+    messagesLid: 0,
+    messagesWithPhone: 0,
+    attachedFromPacket: 0,
+    attachedFromMap: 0,
+    unresolved: 0,
+    mapHit: 0,
+    mapMiss: 0,
+    mapError: 0,
+    packetsBootstrap: syncType === 0 ? 1 : 0,
+    packetsRecent: syncType === 3 ? 1 : 0,
+    packetsFull: syncType === 2 ? 1 : 0,
+    packetsPushName: syncType === 4 ? 1 : 0,
+    packetsOther: [0, 2, 3, 4].includes(syncType as number) ? 0 : 1,
+  };
+}
+
+export function countChatAddresses(stats: HistoryStats, chats: Array<{ id?: unknown }> | undefined | null): void {
+  for (const chat of Array.isArray(chats) ? chats : []) {
+    stats.chats += 1;
+    if (asLid(chat?.id)) stats.chatsLid += 1;
+    else if (asPhone(chat?.id)) stats.chatsPhone += 1;
+  }
+}
+
 // Os pares de UMA conexão, lembrados entre os pacotes do histórico. Só memória.
 export class HistoryPhoneBook {
   private readonly known = new Map<string, string>();
 
   get size(): number {
     return this.known.size;
+  }
+
+  has(lid: string | null | undefined): boolean {
+    return !!asLid(lid) && this.known.has(jidNormalizedUser(lid));
   }
 
   // Junta os pares que vieram neste pacote. Devolve quantos pares o pacote trouxe.

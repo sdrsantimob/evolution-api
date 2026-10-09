@@ -82,7 +82,15 @@ import { createId as cuid } from '@paralleldrive/cuid2';
 import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
-import { attachPhone, HistoryPhoneBook, needsPhone } from '@utils/historyPhoneByLid';
+import {
+  attachPhone,
+  countChatAddresses,
+  HistoryPhoneBook,
+  lidBeforeSwap,
+  needsPhone,
+  newHistoryStats,
+  withBothAddresses,
+} from '@utils/historyPhoneByLid';
 import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
 import { status } from '@utils/renderStatus';
@@ -982,9 +990,29 @@ export class BaileysStartupService extends ChannelStartupService {
 
         // [WA-34:inicio] Par telefone/identificador que o WhatsApp manda junto do histórico.
         // Fica só na memória desta conexão: não é gravado em banco e não é escrito em registro.
-        this.historyPhoneBook.remember(contacts);
+        // Junto vão CONTAGENS (só números) do que o WhatsApp entregou neste pacote.
+        const historyStats = newHistoryStats(syncType);
+        countChatAddresses(historyStats, chats);
+        historyStats.contacts = Array.isArray(contacts) ? contacts.length : 0;
+        historyStats.contactsWithPair = this.historyPhoneBook.remember(contacts);
+        historyStats.pairsRemembered = this.historyPhoneBook.size;
         const lidsWithoutPhone = new Set<string>();
-        const lookupPhone = (lid: string) => this.client?.signalRepository?.lidMapping?.getPNForLID(lid);
+        const lidsFromSessionMap = new Set<string>();
+        const lookupPhone = async (lid: string) => {
+          try {
+            const found = await this.client?.signalRepository?.lidMapping?.getPNForLID(lid);
+            if (found) {
+              historyStats.mapHit += 1;
+              lidsFromSessionMap.add(lid);
+            } else {
+              historyStats.mapMiss += 1;
+            }
+            return found;
+          } catch {
+            historyStats.mapError += 1;
+            return null;
+          }
+        };
         // [WA-34:fim]
 
         const chatsRaw: { remoteJid: string; instanceId: string; name?: string }[] = [];
@@ -1058,17 +1086,29 @@ export class BaileysStartupService extends ChannelStartupService {
 
           // [WA-34:inicio] Conversa endereçada só pelo identificador novo: anexa o telefone à chave.
           if (needsPhone(m.key)) {
-            attachPhone(m.key, await this.historyPhoneBook.phoneFor(m.key.remoteJid, lookupPhone, lidsWithoutPhone));
+            historyStats.messagesLid += 1;
+            const phone = await this.historyPhoneBook.phoneFor(m.key.remoteJid, lookupPhone, lidsWithoutPhone);
+            if (attachPhone(m.key, phone)) {
+              historyStats.messagesWithPhone += 1;
+              if (lidsFromSessionMap.has(jidNormalizedUser(m.key.remoteJid))) historyStats.attachedFromMap += 1;
+              else historyStats.attachedFromPacket += 1;
+            } else {
+              historyStats.unresolved += 1;
+            }
           }
           // [WA-34:fim]
 
           messagesRaw.push(this.prepareMessage(m));
         }
 
+        // [WA-34:inicio] As contagens seguem no mesmo aviso (campo `historyStats`).
+        historyStats.messages = messagesRaw.length;
         this.sendDataWebhook(Events.MESSAGES_SET, [...messagesRaw], true, undefined, {
           isLatest,
           progress,
+          historyStats,
         });
+        // [WA-34:fim]
 
         if (this.configService.get<Database>('DATABASE').SAVE_DATA.HISTORIC) {
           await this.prismaRepository.message.createMany({ data: messagesRaw, skipDuplicates: true });
@@ -1492,11 +1532,18 @@ export class BaileysStartupService extends ChannelStartupService {
           }
 
           sendTelemetry(`received.message.${messageRaw.messageType ?? 'unknown'}`);
+          // [WA-34:inicio] Guarda o identificador antes de o endereço ser trocado pelo telefone.
+          const lidOfChat = lidBeforeSwap(messageRaw.key);
+          // [WA-34:fim]
           if (messageRaw.key.remoteJid?.includes('@lid') && messageRaw.key.remoteJidAlt) {
             messageRaw.key.remoteJid = messageRaw.key.remoteJidAlt;
           }
 
-          this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
+          // [WA-34:inicio] O aviso leva os DOIS endereços (telefone + identificador), para quem
+          // recebe não abrir uma segunda conversa da mesma pessoa. Vai numa cópia: o que o
+          // conector usa daqui para baixo continua igual.
+          this.sendDataWebhook(Events.MESSAGES_UPSERT, withBothAddresses(messageRaw, lidOfChat));
+          // [WA-34:fim]
 
           await chatbotController.emit({
             instance: { instanceName: this.instance.name, instanceId: this.instanceId },
