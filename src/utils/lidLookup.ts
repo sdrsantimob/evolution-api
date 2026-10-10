@@ -104,7 +104,6 @@ export class LidLookupGate {
       // Conexão que cai no meio deixa a pergunta sem resposta: a porta não fica presa nela.
       const gaveUp = new Promise<'timeout'>((resolve) => {
         timer = setTimeout(() => resolve('timeout'), this.timeoutMs);
-        timer.unref?.();
       });
       const pending = exec(query);
       pending.catch(() => undefined); // resposta que falha depois da desistência não vira erro solto
