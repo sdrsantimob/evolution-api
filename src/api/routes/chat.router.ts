@@ -63,8 +63,9 @@ export class ChatRouter extends RouterBroker {
       })
       // [WA-37:inicio] Identificador de UM número, um por vez. O número vem no corpo (nunca no
       // endereço) e a rota não passa pelo validador comum, que escreve o erro de validação em
-      // registro: aqui nada é escrito e nenhuma falha sobe para o tratador geral de erros. A
-      // resposta é sempre 200 com o desfecho — e, quando há, o identificador.
+      // registro. Passados os guardas de acesso (que recusam chave ou conexão inválida do jeito
+      // de sempre, sem olhar o corpo), aqui nada é escrito e nenhuma falha sobe para o tratador
+      // geral de erros: a resposta é 200 com o desfecho — e, quando há, o identificador.
       .post(this.routerPath('findLid'), ...guards, async (req, res) => {
         let result: unknown = { outcome: 'failed' };
         try {

@@ -3572,10 +3572,14 @@ export class BaileysStartupService extends ChannelStartupService {
   // Chat Controller
   // [WA-37:inicio] Pergunta ao WhatsApp o identificador de UM número, por esta conexão. A pergunta
   // vai direto ao WhatsApp e a resposta volta para quem chamou: nada é gravado na sessão, em
-  // banco ou em cache, e nada é escrito em registro. Sem conexão aberta, não pergunta.
+  // banco ou em cache, e este serviço não escreve nada. Sem conexão aberta, não pergunta; com o
+  // registro detalhado da biblioteca ligado (ela imprimiria a pergunta e a resposta), também não.
   public async findLid(data: FindLidDto): Promise<LidLookupResult> {
     const client = this.stateConnection?.state === 'open' ? this.client : null;
-    return this.lidLookupGate.run(data?.number, client ? (query) => client.executeUSyncQuery(query) : null);
+    const exec = client
+      ? (query: Parameters<typeof client.executeUSyncQuery>[0]) => client.executeUSyncQuery(query)
+      : null;
+    return this.lidLookupGate.run(data?.number, exec, this.logBaileys);
   }
   // [WA-37:fim]
 

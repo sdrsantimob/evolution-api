@@ -75,6 +75,16 @@ async function bootstrap() {
   app.use(
     (err: Error, req: Request, res: Response, next: NextFunction) => {
       if (err) {
+        // [WA-37] Corpo que não é JSON válido: a mensagem do interpretador repete um pedaço do
+        // corpo recebido. Ela não volta na resposta nem segue para registro ou aviso de erro.
+        if (err['type'] === 'entity.parse.failed') {
+          return res.status(400).json({
+            status: 400,
+            error: 'Bad Request',
+            response: { message: 'Invalid JSON body' },
+          });
+        }
+
         const webhook = configService.get<Webhook>('WEBHOOK');
 
         if (webhook.EVENTS.ERRORS_WEBHOOK && webhook.EVENTS.ERRORS_WEBHOOK != '' && webhook.EVENTS.ERRORS) {

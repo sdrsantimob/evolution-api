@@ -121,6 +121,20 @@ acusar "[WA-37] a consulta do identificador aceita lista de números" < <(grep -
 fora_wa37=$(awk '/\[WA-37:inicio\]/{d=1} !d{print FILENAME":"FNR": "$0} /\[WA-37:fim\]/{d=0}' "$BAILEYS" | grep -E 'executeUSyncQuery|lidLookupGate')
 acusar "[WA-37] consulta direta ao WhatsApp usada fora do trecho marcado" < <(printf '%s' "$fora_wa37")
 
+# 8) [WA-37] o monitor de erros (Sentry) não leva corpo de requisição nem chave de acesso: a
+#    limpeza está ligada nos dois tipos de evento, e o corpo malformado não é repetido no erro.
+SENTRY=src/utils/instrumentSentry.ts
+PRINCIPAL=src/main.ts
+for f in "$SENTRY" src/utils/sentryScrub.ts "$PRINCIPAL"; do
+    [ -f "$f" ] || { echo "FALHA: $f não existe (o guard perdeu o alvo — atualize a lista)"; falhas=$((falhas+1)); }
+done
+for gancho in 'beforeSend: \(event\) => scrubRequest\(event\)' 'beforeSendTransaction: \(event\) => scrubRequest\(event\)' 'sendDefaultPii: false'; do
+    grep -qE "$gancho" "$SENTRY" 2>/dev/null || { echo "FALHA: [WA-37] $SENTRY sem a limpeza do evento ($gancho)"; falhas=$((falhas+1)); }
+done
+grep -q "entity.parse.failed" "$PRINCIPAL" 2>/dev/null || { echo "FALHA: [WA-37] $PRINCIPAL voltou a repetir o corpo malformado na mensagem de erro"; falhas=$((falhas+1)); }
+# A consulta só roda com o registro da biblioteca em nível silencioso: o serviço entrega o nível à porta.
+trecho_wa37 "$BAILEYS" | grep -qE 'lidLookupGate\.run\(.*this\.logBaileys\)' || { echo "FALHA: [WA-37] a consulta do identificador não informa o nível de registro da biblioteca à porta"; falhas=$((falhas+1)); }
+
 # 6) o guard não pode voltar a contar falha dentro de subshell
 if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$ESTE" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
     echo "FALHA: este guard chama \`acusar\` no fim de um pipe — a falha não seria contada"
