@@ -26,6 +26,11 @@ export class WhatsAppNumberDto {
   numbers: string[];
 }
 
+// [WA-37] Um número só, sem lista: a consulta do identificador é uma por vez.
+export class FindLidDto {
+  number: string;
+}
+
 export class NumberDto {
   number: string;
 }

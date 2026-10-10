@@ -4,6 +4,7 @@ import {
   ArchiveChatDto,
   BlockUserDto,
   DeleteMessage,
+  FindLidDto,
   getBase64FromMediaMessageDto,
   LastMessage,
   MarkChatUnreadDto,
@@ -91,6 +92,7 @@ import {
   newHistoryStats,
   withBothAddresses,
 } from '@utils/historyPhoneByLid';
+import { LidLookupGate, LidLookupResult } from '@utils/lidLookup';
 import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
 import { status } from '@utils/renderStatus';
@@ -262,6 +264,10 @@ export class BaileysStartupService extends ChannelStartupService {
   // gravado em lugar nenhum, não vai para registro e é esquecido quando a conexão é encerrada.
   private readonly historyPhoneBook = new HistoryPhoneBook();
   // [WA-34:fim]
+  // [WA-37:inicio] Porta da consulta "número → identificador" desta conexão: uma por vez, com
+  // intervalo mínimo. Só memória (a hora da última consulta); nenhum número fica aqui.
+  private readonly lidLookupGate = new LidLookupGate();
+  // [WA-37:fim]
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
 
@@ -3564,6 +3570,15 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   // Chat Controller
+  // [WA-37:inicio] Pergunta ao WhatsApp o identificador de UM número, por esta conexão. A pergunta
+  // vai direto ao WhatsApp e a resposta volta para quem chamou: nada é gravado na sessão, em
+  // banco ou em cache, e nada é escrito em registro. Sem conexão aberta, não pergunta.
+  public async findLid(data: FindLidDto): Promise<LidLookupResult> {
+    const client = this.stateConnection?.state === 'open' ? this.client : null;
+    return this.lidLookupGate.run(data?.number, client ? (query) => client.executeUSyncQuery(query) : null);
+  }
+  // [WA-37:fim]
+
   public async whatsappNumber(data: WhatsAppNumberDto) {
     const jids: {
       groups: { number: string; jid: string }[];

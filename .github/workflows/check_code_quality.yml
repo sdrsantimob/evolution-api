@@ -43,3 +43,6 @@ jobs:
 
     - name: Test history phone pairing (WA-34)
       run: npx tsx --test tests/historyPhoneByLid.test.ts
+
+    - name: Test lid lookup, one number at a time (WA-37)
+      run: npx tsx --test tests/lidLookup.test.ts

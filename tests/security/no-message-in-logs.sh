@@ -79,6 +79,48 @@ acusar "[WA-34] $HIST escreve em log, banco, cache ou arquivo" < <(grep -niE '(l
 # o telefone anexado, o livro de pares ou o lote de mensagens do histórico.
 acusar "[WA-34] chamada de log leva o telefone anexado, os pares ou o lote do histórico" < <(grep -nE "${LOG}[^\n]*(remoteJidAlt|historyPhoneBook|phoneByLid|phoneNumber|messagesRaw|lidsWithoutPhone)" "$BAILEYS" "$META" "$EVO" "$WEBHOOK" 2>/dev/null)
 
+# 7) [WA-37] a consulta "número → identificador" não escreve em log, não grava em banco, cache,
+#    arquivo ou sessão, e NÃO usa o caminho da biblioteca que grava o par (`lidMapping`).
+LIDLOOKUP=src/utils/lidLookup.ts
+ROTAS=src/api/routes/chat.router.ts
+CONTROLE=src/api/controllers/chat.controller.ts
+for f in "$LIDLOOKUP" "$ROTAS" "$CONTROLE"; do
+    [ -f "$f" ] || { echo "FALHA: $f não existe (o guard perdeu o alvo — atualize a lista)"; falhas=$((falhas+1)); }
+done
+# Linhas dos trechos marcados [WA-37], sem as que são só comentário.
+trecho_wa37() { # $1 = arquivo
+    awk '/\[WA-37:inicio\]/{d=1} d{print FILENAME":"FNR": "$0} /\[WA-37:fim\]/{d=0}' "$1" \
+        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'
+}
+marcas_wa37() { # $1 = arquivo · $2 = mínimo de trechos
+    local ini fim
+    ini=$(grep -c '\[WA-37:inicio\]' "$1" 2>/dev/null); ini=${ini:-0}
+    fim=$(grep -c '\[WA-37:fim\]' "$1" 2>/dev/null); fim=${fim:-0}
+    case "$ini$fim" in *[!0-9]*) ini=0; fim=0 ;; esac
+    if [ "$ini" -lt "$2" ] || [ "$ini" -ne "$fim" ]; then
+        echo "FALHA: marcadores [WA-37:inicio]/[WA-37:fim] ausentes ou desbalanceados em $1 ($ini/$fim) — o guard perdeu o alvo"
+        falhas=$((falhas+1))
+    fi
+}
+marcas_wa37 "$BAILEYS" 2
+marcas_wa37 "$ROTAS" 1
+marcas_wa37 "$CONTROLE" 1
+ESCREVE='(logger\.|console\.|process\.stdout|process\.stderr)'
+GUARDA_WA37='(prisma|Repository|\.createMany\(|\.create\(|\.upsert\(|\.update(Many)?\(|OnWhatsappCache|lidMapping|LIDPNMapping|getLIDsForPNs|getLIDForPN|keys\.set|\.hSet\(|cache\.(set|get)|NodeCache|redis|fs\.|writeFile|appendFile|sendDataWebhook|dataValidate)'
+for f in "$BAILEYS" "$ROTAS" "$CONTROLE"; do
+    acusar "[WA-37] trecho da consulta do identificador escreve em log ($f)" < <(trecho_wa37 "$f" | grep -E "$ESCREVE")
+    acusar "[WA-37] trecho da consulta do identificador grava, usa cache/sessão ou o validador que escreve em log ($f)" < <(trecho_wa37 "$f" | grep -iE "$GUARDA_WA37")
+done
+acusar "[WA-37] $LIDLOOKUP escreve em log" < <(grep -nE "$ESCREVE" "$LIDLOOKUP" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+acusar "[WA-37] $LIDLOOKUP grava, usa cache/sessão ou o caminho que guarda o par" < <(grep -niE "$GUARDA_WA37" "$LIDLOOKUP" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+# O arquivo da consulta só depende da biblioteca do WhatsApp (nada de banco, cache ou configuração).
+acusar "[WA-37] $LIDLOOKUP importa algo além da biblioteca do WhatsApp" < <(grep -nE "^import .* from '" "$LIDLOOKUP" 2>/dev/null | grep -vE "from 'baileys';")
+# A consulta é UMA por vez: nenhum caminho novo pode aceitar lista de números para ela.
+acusar "[WA-37] a consulta do identificador aceita lista de números" < <(grep -nE 'numbers' "$LIDLOOKUP" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+# Fora dos trechos marcados, ninguém mais chama a consulta direta ao WhatsApp nos serviços de canal.
+fora_wa37=$(awk '/\[WA-37:inicio\]/{d=1} !d{print FILENAME":"FNR": "$0} /\[WA-37:fim\]/{d=0}' "$BAILEYS" | grep -E 'executeUSyncQuery|lidLookupGate')
+acusar "[WA-37] consulta direta ao WhatsApp usada fora do trecho marcado" < <(printf '%s' "$fora_wa37")
+
 # 6) o guard não pode voltar a contar falha dentro de subshell
 if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$ESTE" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
     echo "FALHA: este guard chama \`acusar\` no fim de um pipe — a falha não seria contada"
