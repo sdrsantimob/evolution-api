@@ -2,6 +2,7 @@ import {
   ArchiveChatDto,
   BlockUserDto,
   DeleteMessage,
+  FindLidDto,
   getBase64FromMediaMessageDto,
   MarkChatUnreadDto,
   NumberDto,
@@ -25,6 +26,15 @@ export class ChatController {
   public async whatsappNumber({ instanceName }: InstanceDto, data: WhatsAppNumberDto) {
     return await this.waMonitor.waInstances[instanceName].whatsappNumber(data);
   }
+
+  // [WA-37:inicio] Identificador de UM número, perguntado ao WhatsApp pela conexão dona da rota.
+  // Só a conexão por aparelho sabe perguntar; nas demais a resposta é "sem conexão".
+  public async findLid({ instanceName }: InstanceDto, data: FindLidDto) {
+    const instance = this.waMonitor.waInstances[instanceName] as { findLid?: (data: FindLidDto) => Promise<unknown> };
+    if (typeof instance?.findLid !== 'function') return { outcome: 'offline' };
+    return await instance.findLid(data);
+  }
+  // [WA-37:fim]
 
   public async readMessage({ instanceName }: InstanceDto, data: ReadMessageDto) {
     return await this.waMonitor.waInstances[instanceName].markMessageAsRead(data);

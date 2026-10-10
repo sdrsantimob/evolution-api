@@ -3,6 +3,7 @@ import {
   ArchiveChatDto,
   BlockUserDto,
   DeleteMessage,
+  FindLidDto,
   getBase64FromMediaMessageDto,
   MarkChatUnreadDto,
   NumberDto,
@@ -60,6 +61,26 @@ export class ChatRouter extends RouterBroker {
           return res.status(HttpStatus.BAD_REQUEST).json(error);
         }
       })
+      // [WA-37:inicio] Identificador de UM número, um por vez. O número vem no corpo (nunca no
+      // endereço) e a rota não passa pelo validador comum, que escreve o erro de validação em
+      // registro. Passados os guardas de acesso (que recusam chave ou conexão inválida do jeito
+      // de sempre, sem olhar o corpo), aqui nada é escrito e nenhuma falha sobe para o tratador
+      // geral de erros: a resposta é 200 com o desfecho — e, quando há, o identificador.
+      .post(this.routerPath('findLid'), ...guards, async (req, res) => {
+        let result: unknown = { outcome: 'failed' };
+        try {
+          const body = req.body as Record<string, unknown> | undefined;
+          const onlyNumber = !!body && typeof body === 'object' && Object.keys(body).join() === 'number';
+          result = onlyNumber
+            ? await chatController.findLid(req.params as unknown as InstanceDto, { number: body.number } as FindLidDto)
+            : { outcome: 'invalid' };
+        } catch {
+          result = { outcome: 'failed' };
+        }
+
+        return res.status(HttpStatus.OK).json(result);
+      })
+      // [WA-37:fim]
       .post(this.routerPath('markMessageAsRead'), ...guards, async (req, res) => {
         const response = await this.dataValidate<ReadMessageDto>({
           request: req,
