@@ -45,6 +45,19 @@ export class CacheService {
     this.cache.set(key, value, ttl);
   }
 
+  /**
+   * Leitura que distingue "não existe" (null) de "o Redis falhou" (erro). Usada só para o crachá da
+   * sessão do WhatsApp: tratar falha como "não existe" faz o conector criar um crachá novo (QR) e
+   * depois gravá-lo por cima do verdadeiro.
+   */
+  public async hGetStrict(key: string, field: string) {
+    if (!this.cache) throw new Error('cache indisponível');
+    const strict = (this.cache as any).hGetStrict;
+    if (typeof strict !== 'function') throw new Error('cache sem leitura estrita');
+    const data = await strict.call(this.cache, key, field);
+    return data ? JSON.parse(data, BufferJSON.reviver) : null;
+  }
+
   public async hSet(key: string, field: string, value: any) {
     if (!this.cache) {
       return;

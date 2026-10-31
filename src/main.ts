@@ -1,3 +1,5 @@
+// Primeiro de tudo: nenhuma chave de sessão do WhatsApp sai no log.
+import '@utils/consoleGuard';
 // Import this first from sentry instrument!
 import '@utils/instrumentSentry';
 

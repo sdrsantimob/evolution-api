@@ -46,3 +46,6 @@ jobs:
 
     - name: Test lid lookup, one number at a time (WA-37)
       run: npx tsx --test tests/lidLookup.test.ts tests/sentryScrub.test.ts
+
+    - name: Test session keys never reach logs, short memory of chats/contacts
+      run: npx tsx --test tests/consoleGuard.test.ts tests/recordMemo.test.ts

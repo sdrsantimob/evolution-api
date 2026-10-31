@@ -1,7 +1,7 @@
 import { configService, Sentry as SentryConfig } from '@config/env.config';
 import * as Sentry from '@sentry/node';
 
-import { scrubRequest } from './sentryScrub';
+import { scrubBreadcrumb, scrubRequest } from './sentryScrub';
 
 const sentryConfig = configService.get<SentryConfig>('SENTRY');
 
@@ -15,5 +15,7 @@ if (sentryConfig.DSN) {
     sendDefaultPii: false,
     beforeSend: (event) => scrubRequest(event),
     beforeSendTransaction: (event) => scrubRequest(event),
+    // O monitor guarda as últimas linhas do console junto de cada erro; a sessão do WhatsApp não vai junto.
+    beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),
   });
 }

@@ -55,6 +55,22 @@ export async function getAuthKey(sessionId: string): Promise<any> {
   }
 }
 
+/**
+ * Crachá da sessão lido do banco do conector. Devolve null só quando a linha não existe; erro do
+ * banco sobe. Antes, erro virava "não existe" e o conector criava um crachá novo (QR), que podia ser
+ * gravado por cima do verdadeiro quando o banco voltasse.
+ */
+export async function readCredsFromDatabase(sessionId: string): Promise<any | null> {
+  const row = await prismaRepository.session.findUnique({ where: { sessionId } });
+  if (!row?.creds) return null;
+  return JSON.parse(JSON.parse(row.creds), BufferJSON.reviver);
+}
+
+/** Crachá sem aparelho pareado (`me`) nunca substitui um crachá pareado já gravado. */
+export function wouldOverwritePairedCreds(incoming: any, stored: any): boolean {
+  return !incoming?.me && !!stored?.me;
+}
+
 async function deleteAuthKey(sessionId: string): Promise<any> {
   try {
     const register = await keyExists(sessionId);
@@ -99,6 +115,16 @@ export default async function useMultiFileAuthStatePrisma(
         await fs.writeFile(localFile(key), dataString);
         return;
       }
+    }
+    try {
+      const stored = data?.me ? null : await readCredsFromDatabase(sessionId);
+      if (wouldOverwritePairedCreds(data, stored)) {
+        logger.warn({ action: 'creds.save.recusado', motivo: 'crachá sem pareamento sobre crachá pareado', sessionId });
+        return;
+      }
+    } catch {
+      logger.warn({ action: 'creds.save.adiado', motivo: 'banco indisponível', sessionId });
+      return;
     }
     await saveKey(sessionId, dataString);
     return;
@@ -166,7 +192,8 @@ export default async function useMultiFileAuthStatePrisma(
     await deleteAuthKey(sessionId);
   }
 
-  let creds = await readData('creds');
+  // Erro do banco interrompe aqui (a conexão não abre e tenta de novo depois) em vez de virar QR.
+  let creds = await readCredsFromDatabase(sessionId);
   if (!creds) {
     creds = initAuthCreds();
     await writeData(creds, 'creds');

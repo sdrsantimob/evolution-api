@@ -40,6 +40,12 @@ export class RedisCache implements ICache {
     }
   }
 
+  /** Como hGet, mas um erro do Redis sobe em vez de virar "não existe" (usado para o crachá da sessão). */
+  async hGetStrict(key: string, field: string) {
+    const data = await this.client.hGet(this.buildKey(key), field);
+    return data ? JSON.parse(data, BufferJSON.reviver) : null;
+  }
+
   async set(key: string, value: any, ttl?: number) {
     try {
       await this.client.setEx(this.buildKey(key), ttl || this.conf?.TTL, JSON.stringify(value));
