@@ -157,6 +157,9 @@ export class ChannelStartupService {
     this.localSettings.wavoipToken = data?.wavoipToken;
   }
 
+  /** Grava o que estiver pendente antes de uma leitura (sobrescrito no canal WhatsApp). */
+  public async flushPendingWrites(): Promise<void> {}
+
   public async loadSettings() {
     this.settingsLastAttempt = Date.now();
     const data = await this.prismaRepository.setting.findUnique({
@@ -513,6 +516,7 @@ export class ChannelStartupService {
   }
 
   public async fetchContacts(query: Query<Contact>) {
+    await this.flushPendingWrites(); // agenda/lista sempre com tudo gravado
     const where: any = {
       instanceId: this.instanceId,
     };
@@ -732,6 +736,7 @@ export class ChannelStartupService {
   }
 
   public async fetchChats(query: any) {
+    await this.flushPendingWrites(); // agenda/lista sempre com tudo gravado
     const remoteJid = query?.where?.remoteJid
       ? query?.where?.remoteJid.includes('@')
         ? query.where?.remoteJid

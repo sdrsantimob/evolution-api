@@ -46,6 +46,27 @@ export class RedisCache implements ICache {
     return data ? JSON.parse(data, BufferJSON.reviver) : null;
   }
 
+  // Operações cruas usadas pelas gravações agrupadas (utils/writeBehind): erro sobe, sem conversão.
+  isReady(): boolean {
+    return !!(this.client as any)?.isReady;
+  }
+
+  async hSetRaw(key: string, field: string, value: string) {
+    await this.client.hSet(this.buildKey(key), field, value);
+  }
+
+  async hDelRaw(key: string, field: string) {
+    await this.client.hDel(this.buildKey(key), field);
+  }
+
+  async hGetAllRaw(key: string): Promise<Record<string, string>> {
+    return await this.client.hGetAll(this.buildKey(key));
+  }
+
+  async delRaw(key: string) {
+    await this.client.del(this.buildKey(key));
+  }
+
   async set(key: string, value: any, ttl?: number) {
     try {
       await this.client.setEx(this.buildKey(key), ttl || this.conf?.TTL, JSON.stringify(value));
