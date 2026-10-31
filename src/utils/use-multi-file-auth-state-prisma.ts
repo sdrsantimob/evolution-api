@@ -7,6 +7,8 @@ import { AuthenticationState, BufferJSON, initAuthCreds, WAProto as proto } from
 import fs from 'fs/promises';
 import path from 'path';
 
+import { CredsCopies, loadCreds, makeSaveCreds } from './credsStore';
+
 const fixFileName = (file: string): string | undefined => {
   if (!file) {
     return undefined;
@@ -66,9 +68,14 @@ export async function readCredsFromDatabase(sessionId: string): Promise<any | nu
   return JSON.parse(JSON.parse(row.creds), BufferJSON.reviver);
 }
 
-/** Crachá sem aparelho pareado (`me`) nunca substitui um crachá pareado já gravado. */
-export function wouldOverwritePairedCreds(incoming: any, stored: any): boolean {
-  return !incoming?.me && !!stored?.me;
+/** Grava o crachá no banco do conector no mesmo formato de sempre. Erro sobe. */
+export async function writeCredsToDatabase(sessionId: string, creds: any): Promise<void> {
+  const value = JSON.stringify(JSON.stringify(creds, BufferJSON.replacer));
+  await prismaRepository.session.upsert({
+    where: { sessionId },
+    create: { sessionId, creds: value },
+    update: { creds: value },
+  });
 }
 
 async function deleteAuthKey(sessionId: string): Promise<any> {
@@ -115,16 +122,6 @@ export default async function useMultiFileAuthStatePrisma(
         await fs.writeFile(localFile(key), dataString);
         return;
       }
-    }
-    try {
-      const stored = data?.me ? null : await readCredsFromDatabase(sessionId);
-      if (wouldOverwritePairedCreds(data, stored)) {
-        logger.warn({ action: 'creds.save.recusado', motivo: 'crachá sem pareamento sobre crachá pareado', sessionId });
-        return;
-      }
-    } catch {
-      logger.warn({ action: 'creds.save.adiado', motivo: 'banco indisponível', sessionId });
-      return;
     }
     await saveKey(sessionId, dataString);
     return;
@@ -192,11 +189,23 @@ export default async function useMultiFileAuthStatePrisma(
     await deleteAuthKey(sessionId);
   }
 
-  // Erro do banco interrompe aqui (a conexão não abre e tenta de novo depois) em vez de virar QR.
-  let creds = await readCredsFromDatabase(sessionId);
+  // Crachá: principal no banco, cópia de segurança no Redis (ver utils/credsStore). Erro do banco
+  // interrompe aqui (a conexão não abre e tenta de novo depois) em vez de virar QR.
+  const copies: CredsCopies = {
+    readDb: () => readCredsFromDatabase(sessionId),
+    writeDb: (c) => writeCredsToDatabase(sessionId, c),
+    ...(configService.get<CacheConf>('CACHE').REDIS.ENABLED
+      ? {
+          readRedis: () => cache.hGetStrict(sessionId, 'creds'),
+          writeRedis: (c) => cache.hSet(sessionId, 'creds', c),
+        }
+      : {}),
+  };
+  const save = makeSaveCreds(copies, 'db', logger, sessionId);
+  let creds = await loadCreds(copies, 'db', logger, sessionId);
   if (!creds) {
     creds = initAuthCreds();
-    await writeData(creds, 'creds');
+    await save(creds);
   }
 
   return {
@@ -232,7 +241,7 @@ export default async function useMultiFileAuthStatePrisma(
       },
     },
     saveCreds: () => {
-      return writeData(creds, 'creds');
+      return save(creds);
     },
 
     removeCreds,

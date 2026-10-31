@@ -1,13 +1,15 @@
 import { CacheService } from '@api/services/cache.service';
 import { Logger } from '@config/logger.config';
-import { AuthenticationCreds, AuthenticationState, BufferJSON, initAuthCreds, proto, SignalDataTypeMap } from 'baileys';
+import { AuthenticationCreds, AuthenticationState, initAuthCreds, proto, SignalDataTypeMap } from 'baileys';
+
+import { CredsCopies, loadCreds, makeSaveCreds } from './credsStore';
 
 export async function useMultiFileAuthStateRedisDb(
   instanceName: string,
   cache: CacheService,
-  // Leitura do crachá no modo anterior (banco do conector). Usada uma vez, quando o Redis ainda não
-  // tem o crachá: copia por dentro do processo, sem o segredo passar por mãos ou arquivos.
-  readLegacyCreds?: () => Promise<AuthenticationCreds | null>,
+  // Cópia do crachá no banco do conector (modo anterior), usada como cópia de segurança: na 1ª
+  // partida o crachá vem de lá por dentro do processo; depois ela é renovada a cada 24h.
+  dbCopy?: { read: () => Promise<any | null>; write: (creds: any) => Promise<void> },
 ): Promise<{
   state: AuthenticationState;
   saveCreds: () => Promise<void>;
@@ -50,22 +52,15 @@ export async function useMultiFileAuthStateRedisDb(
     }
   }
 
-  // Erro do Redis ou do banco interrompe aqui (a conexão não abre e tenta de novo depois). Só um
-  // "não existe" confirmado nos dois lugares leva a um crachá novo (QR).
-  let creds: AuthenticationCreds = await cache.hGetStrict(instanceName, 'creds');
-  if (!creds && readLegacyCreds) {
-    const legacy = await readLegacyCreds();
-    if (legacy) {
-      await cache.hSet(instanceName, 'creds', legacy);
-      const copied = await cache.hGetStrict(instanceName, 'creds');
-      if (!copied || JSON.stringify(copied, BufferJSON.replacer) !== JSON.stringify(legacy, BufferJSON.replacer)) {
-        throw new Error('cópia do crachá para o Redis não confirmada');
-      }
-      logger.info({ action: 'creds.copiado-do-banco', instanceName });
-      creds = copied;
-    }
-  }
-  if (!creds) creds = initAuthCreds();
+  // Crachá: principal no Redis, cópia de segurança no banco (ver utils/credsStore). Erro interrompe
+  // aqui (a conexão não abre e tenta de novo depois); só "não existe" confirmado vira crachá novo (QR).
+  const copies: CredsCopies = {
+    readRedis: () => cache.hGetStrict(instanceName, 'creds'),
+    writeRedis: (c) => cache.hSet(instanceName, 'creds', c),
+    ...(dbCopy ? { readDb: dbCopy.read, writeDb: dbCopy.write } : {}),
+  };
+  const save = makeSaveCreds(copies, 'redis', logger, instanceName);
+  const creds: AuthenticationCreds = (await loadCreds(copies, 'redis', logger, instanceName)) || initAuthCreds();
 
   return {
     state: {
@@ -103,24 +98,7 @@ export async function useMultiFileAuthStateRedisDb(
       },
     },
     saveCreds: async () => {
-      if (!creds?.me) {
-        let stored: any;
-        try {
-          stored = await cache.hGetStrict(instanceName, 'creds');
-        } catch {
-          logger.warn({ action: 'creds.save.adiado', motivo: 'redis indisponível', instanceName });
-          return;
-        }
-        if (stored?.me) {
-          logger.warn({
-            action: 'creds.save.recusado',
-            motivo: 'crachá sem pareamento sobre crachá pareado',
-            instanceName,
-          });
-          return;
-        }
-      }
-      return await writeData(creds, 'creds');
+      return await save(creds);
     },
 
     removeCreds,

@@ -45,40 +45,63 @@ test('crachá: cópia, falhas, sobrescrita e reversão', { skip: !enabled && 'se
     await prismaRepository.$disconnect();
   });
 
-  await t.test('A: banco tem o crachá, Redis vazio -> copia idêntico, banco fica como cópia de segurança', async () => {
+  const dbCopy = (id: string) => ({
+    read: () => prisma.readCredsFromDatabase(id),
+    write: (c: any) => prisma.writeCredsToDatabase(id, c),
+  });
+  const redisMode = (id: string) => useMultiFileAuthStateRedisDb(id, cache, dbCopy(id));
+  const dbMode = (id: string) => prisma.default(id, cache);
+  const ahead = (c: any, d: number) => ({ ...c, nextPreKeyId: c.nextPreKeyId + d, firstUnuploadedPreKeyId: c.firstUnuploadedPreKeyId + d });
+
+  await t.test('A: fase 1 (modo banco) -> abre com o crachá do banco e cria o espelho no Redis', async () => {
     const id = await newId();
     const original = paired();
     await seedDb(id, original);
     await cache.hSet(id, 'pre-key-1', { keyPair: { private: Buffer.alloc(32, 1) } });
-    let reads = 0;
-    const st = await useMultiFileAuthStateRedisDb(id, cache, () => {
-      reads++;
-      return prisma.readCredsFromDatabase(id);
-    });
-    assert.equal(reads, 1);
-    assert.ok(same(st.state.creds, original), 'crachá em uso diferente do original');
+    const st = await dbMode(id);
+    assert.ok(same(st.state.creds, original));
     assert.ok(Buffer.isBuffer(st.state.creds.noiseKey.private));
-    assert.ok(same(await cache.hGetStrict(id, 'creds'), original), 'crachá no Redis diferente do original');
-    assert.ok(same(await prisma.readCredsFromDatabase(id), original), 'cópia do banco foi alterada');
-    assert.ok(await cache.hGet(id, 'pre-key-1'), 'chave já existente no Redis se perdeu');
-    const again = await useMultiFileAuthStateRedisDb(id, cache, () => {
-      reads++;
-      return prisma.readCredsFromDatabase(id);
-    });
-    assert.equal(reads, 1, 'segunda partida voltou a ler o banco');
-    assert.ok(same(again.state.creds, original));
+    assert.ok(same(await cache.hGetStrict(id, 'creds'), original), 'espelho no Redis diferente');
+    assert.ok(same(await prisma.readCredsFromDatabase(id), original), 'banco alterado');
+    assert.ok(await cache.hGet(id, 'pre-key-1'), 'chave existente no Redis se perdeu');
   });
 
-  await t.test('B: reversão -> o modo anterior lê o mesmo crachá e as mesmas chaves', async () => {
+  await t.test('B: fase 3 sem espelho (Redis vazio) -> copia do banco por dentro, idêntico', async () => {
     const id = await newId();
     const original = paired();
     await seedDb(id, original);
-    await useMultiFileAuthStateRedisDb(id, cache, () => prisma.readCredsFromDatabase(id));
-    const back = await prisma.default(id, cache);
-    assert.ok(same(back.state.creds, original));
+    const st = await redisMode(id);
+    assert.ok(same(st.state.creds, original));
+    assert.ok(same(await cache.hGetStrict(id, 'creds'), original));
+    assert.ok(same(await prisma.readCredsFromDatabase(id), original));
   });
 
-  await t.test('C: Redis falha na leitura -> não abre, não cria crachá novo, não grava nada', async () => {
+  await t.test('C: ida e volta completa -> fase 1, fase 3 com uso, volta ao modo banco: vale sempre o mais novo', async () => {
+    const id = await newId();
+    const original = paired();
+    await seedDb(id, original);
+    await dbMode(id); // fase 1
+    const st = await redisMode(id); // fase 3
+    Object.assign(st.state.creds, ahead(original, 30));
+    await st.saveCreds(); // uso no Redis (a cópia no banco fica para trás, até 24h)
+    const back = await dbMode(id); // reversão
+    assert.equal(back.state.creds.nextPreKeyId, original.nextPreKeyId + 30, 'reversão pegou o crachá velho');
+    assert.equal((await prisma.readCredsFromDatabase(id)).nextPreKeyId, original.nextPreKeyId + 30, 'banco não foi atualizado na reversão');
+  });
+
+  await t.test('D: volta à versão ANTIGA do conector (grava só no banco) e ida de novo -> vale o do banco', async () => {
+    const id = await newId();
+    const original = paired();
+    await seedDb(id, original);
+    await redisMode(id);
+    const pelaVersaoAntiga = ahead(original, 50);
+    await seedDb(id, pelaVersaoAntiga); // a versão antiga só conhece o banco
+    const st = await redisMode(id);
+    assert.equal(st.state.creds.nextPreKeyId, pelaVersaoAntiga.nextPreKeyId, 'ida de novo pegou o Redis velho');
+    assert.equal((await cache.hGetStrict(id, 'creds')).nextPreKeyId, pelaVersaoAntiga.nextPreKeyId);
+  });
+
+  await t.test('E: Redis falha na leitura -> não abre, não cria crachá novo, não grava nada', async () => {
     const id = await newId();
     await seedDb(id, paired());
     const broken: any = Object.create(cache);
@@ -89,51 +112,48 @@ test('crachá: cópia, falhas, sobrescrita e reversão', { skip: !enabled && 'se
     broken.hSet = async () => {
       wrote = true;
     };
-    await assert.rejects(useMultiFileAuthStateRedisDb(id, broken, () => prisma.readCredsFromDatabase(id)));
+    await assert.rejects(useMultiFileAuthStateRedisDb(id, broken, dbCopy(id)));
     assert.equal(wrote, false);
   });
 
-  await t.test('D: banco falha na leitura -> não abre, não cria crachá novo', async () => {
+  await t.test('F: banco fora com Redis pareado -> abre pelo Redis; banco fora com Redis vazio -> não abre', async () => {
     const id = await newId();
-    await assert.rejects(
-      useMultiFileAuthStateRedisDb(id, cache, async () => {
-        throw new Error('banco fora');
-      }),
-    );
-    assert.equal(await cache.hGetStrict(id, 'creds'), null);
+    await cache.hSet(id, 'creds', paired());
+    const fora = { read: async () => Promise.reject(new Error('banco fora')), write: async () => Promise.reject(new Error('banco fora')) };
+    const st = await useMultiFileAuthStateRedisDb(id, cache, fora);
+    assert.ok(st.state.creds.me);
+    const vazio = await newId();
+    await assert.rejects(useMultiFileAuthStateRedisDb(vazio, cache, fora));
+    assert.equal(await cache.hGetStrict(vazio, 'creds'), null);
   });
 
-  await t.test('E: nada em lugar nenhum -> crachá novo (QR), gravado só no saveCreds', async () => {
+  await t.test('G: nada em lugar nenhum -> crachá novo (QR), gravado só no saveCreds', async () => {
     const id = await newId();
-    const st = await useMultiFileAuthStateRedisDb(id, cache, () => prisma.readCredsFromDatabase(id));
+    const st = await redisMode(id);
     assert.equal(st.state.creds.me, undefined);
     assert.equal(await cache.hGetStrict(id, 'creds'), null);
     await st.saveCreds();
     assert.ok(await cache.hGetStrict(id, 'creds'));
   });
 
-  await t.test('F: crachá sem pareamento nunca grava por cima de crachá pareado (Redis)', async () => {
+  await t.test('H: crachá sem pareamento nunca grava por cima de pareado (modo Redis e modo banco)', async () => {
     const id = await newId();
-    const fresh = await useMultiFileAuthStateRedisDb(id, cache, () => prisma.readCredsFromDatabase(id));
+    const fresh = await redisMode(id);
     const real = paired();
     await cache.hSet(id, 'creds', real);
     await fresh.saveCreds();
-    assert.ok(same(await cache.hGetStrict(id, 'creds'), real), 'crachá pareado foi sobrescrito');
+    assert.ok(same(await cache.hGetStrict(id, 'creds'), real));
+
+    const id2 = await newId();
+    const fresh2 = await dbMode(id2);
+    await seedDb(id2, real);
+    await fresh2.saveCreds();
+    assert.ok(same(await prisma.readCredsFromDatabase(id2), real));
   });
 
-  await t.test('G: o mesmo vale no modo atual (banco)', async () => {
+  await t.test('I: pareamento novo (com aparelho) grava normalmente', async () => {
     const id = await newId();
-    const fresh = await prisma.default(id, cache);
-    const real = paired();
-    await seedDb(id, real);
-    await fresh.saveCreds();
-    assert.ok(same(await prisma.readCredsFromDatabase(id), real), 'crachá pareado foi sobrescrito no banco');
-  });
-
-  await t.test('H: pareamento novo (com aparelho) grava normalmente', async () => {
-    const id = await newId();
-    const st = await useMultiFileAuthStateRedisDb(id, cache, () => prisma.readCredsFromDatabase(id));
-    await cache.hSet(id, 'creds', initAuthCreds());
+    const st = await redisMode(id);
     (st.state.creds as any).me = { id: '5500000000002:1@s.whatsapp.net' };
     await st.saveCreds();
     assert.equal((await cache.hGetStrict(id, 'creds')).me.id, '5500000000002:1@s.whatsapp.net');

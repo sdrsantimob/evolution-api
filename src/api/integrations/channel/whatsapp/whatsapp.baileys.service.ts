@@ -95,10 +95,13 @@ import {
 import { LidLookupGate, LidLookupResult } from '@utils/lidLookup';
 import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
-import { RecordMemo, samePicture } from '@utils/recordMemo';
+import { memoriaCurtaLigada, RecordMemo, samePicture } from '@utils/recordMemo';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
-import useMultiFileAuthStatePrisma, { readCredsFromDatabase } from '@utils/use-multi-file-auth-state-prisma';
+import useMultiFileAuthStatePrisma, {
+  readCredsFromDatabase,
+  writeCredsToDatabase,
+} from '@utils/use-multi-file-auth-state-prisma';
 import { AuthStateProvider } from '@utils/use-multi-file-auth-state-provider-files';
 import { useMultiFileAuthStateRedisDb } from '@utils/use-multi-file-auth-state-redis-db';
 import axios from 'axios';
@@ -261,9 +264,17 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly msgRetryCounterCache: CacheStore = new NodeCache();
   // Memória curta de conversas e contatos já lidos ou gravados: evita repetir a mesma leitura e a
   // mesma gravação no banco a cada mensagem e a cada confirmação de entrega (ver utils/recordMemo).
-  private readonly chatMemo = new RecordMemo<{ id: string; name: string | null; unreadZero: boolean } | null>();
-  private readonly contactMemo = new RecordMemo<{ pushName: string | null; profilePicUrl: string | null }>();
-  private readonly chatTouchMemo = new RecordMemo<true>(5000, 60 * 60 * 1000);
+  private readonly chatMemo = new RecordMemo<{ id: string; name: string | null; unreadZero: boolean } | null>(
+    20000,
+    24 * 60 * 60 * 1000,
+  );
+  private readonly contactMemo = new RecordMemo<{ pushName: string | null; profilePicUrl: string | null }>(
+    20000,
+    24 * 60 * 60 * 1000,
+  );
+  // Gravação que só renova a data da conversa (ninguém lê essa data): no máximo 1 vez por dia.
+  private readonly chatTouchMemo = new RecordMemo<true>(20000, 24 * 60 * 60 * 1000);
+  private memoLoadedAt = 0;
   private readonly userDevicesCache: CacheStore = new NodeCache({ stdTTL: 300000, useClones: false });
   private endSession = false;
   // [WA-34:inicio] Pares telefone/identificador do histórico desta conexão. Só memória: não é
@@ -598,7 +609,12 @@ export class BaileysStartupService extends ChannelStartupService {
       return await useMultiFileAuthStateRedisDb(
         this.instance.id,
         this.cache,
-        db.SAVE_DATA.INSTANCE ? () => readCredsFromDatabase(this.instance.id) : undefined,
+        db.SAVE_DATA.INSTANCE
+          ? {
+              read: () => readCredsFromDatabase(this.instance.id),
+              write: (c) => writeCredsToDatabase(this.instance.id, c),
+            }
+          : undefined,
       );
     }
 
@@ -785,12 +801,20 @@ export class BaileysStartupService extends ChannelStartupService {
 
   private readonly chatHandle = {
     'chats.upsert': async (chats: Chat[]) => {
-      const existingChatIds = await this.prismaRepository.chat.findMany({
-        where: { instanceId: this.instanceId },
-        select: { remoteJid: true },
-      });
-
-      const existingChatIdSet = new Set(existingChatIds.map((chat) => chat.remoteJid));
+      // Com a lista completa de conversas em memória, saber quais já existem não exige ler a lista
+      // inteira do banco a cada conversa nova. Sem ela (ou com chave em dúvida), lê como antes.
+      let existingChatIdSet: Set<string>;
+      if (!this.chatMemo.isComplete()) await this.loadMemos();
+      const known = chats.map((chat) => this.chatMemo.get(chat.id));
+      if (this.chatMemo.isComplete() && known.every((k) => k !== undefined)) {
+        existingChatIdSet = new Set(chats.filter((_, i) => known[i]).map((chat) => chat.id));
+      } else {
+        const existingChatIds = await this.prismaRepository.chat.findMany({
+          where: { instanceId: this.instanceId },
+          select: { remoteJid: true },
+        });
+        existingChatIdSet = new Set(existingChatIds.map((chat) => chat.remoteJid));
+      }
 
       const chatsToInsert = chats
         .filter((chat) => !existingChatIdSet?.has(chat.id))
@@ -823,6 +847,9 @@ export class BaileysStartupService extends ChannelStartupService {
 
       this.sendDataWebhook(Events.CHATS_UPDATE, chatsRaw);
 
+      // Esta gravação só renova a data de atualização da conversa, que nenhuma leitura usa (a lista de
+      // conversas ordena pela última mensagem/contato). Com a memória curta ligada ela não é feita.
+      if (memoriaCurtaLigada()) return;
       for (const chat of chats) {
         if (this.chatTouchMemo.get(chat.id)) continue;
         this.chatTouchMemo.set(chat.id, true);
@@ -1618,18 +1645,23 @@ export class BaileysStartupService extends ChannelStartupService {
               );
             }
 
-            // Grava só quando o nome ou a foto mudou (a foto compara sem a assinatura do link).
+            // Grava só quando o nome ou a foto mudou (a foto compara sem a assinatura do link). Mensagem
+            // enviada por nós não traz o nome do contato: ela não apaga mais o nome guardado (antes, cada
+            // troca de direção da conversa apagava e regravava o nome).
+            const ownMessage = !!received.key.fromMe;
             const unchanged =
-              (contact.pushName ?? '') === (contactRaw.pushName ?? '') &&
+              (ownMessage || (contact.pushName ?? '') === (contactRaw.pushName ?? '')) &&
               samePicture(contact.profilePicUrl, contactRaw.profilePicUrl);
             if (this.configService.get<Database>('DATABASE').SAVE_DATA.CONTACTS && !unchanged) {
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              const { pushName: _keepName, ...withoutName } = contactRaw;
               await this.prismaRepository.contact.upsert({
                 where: { remoteJid_instanceId: { remoteJid: contactRaw.remoteJid, instanceId: contactRaw.instanceId } },
                 create: contactRaw,
-                update: contactRaw,
+                update: ownMessage ? withoutName : contactRaw,
               });
               this.contactMemo.set(contactRaw.remoteJid, {
-                pushName: contactRaw.pushName ?? null,
+                pushName: ownMessage ? contact.pushName : (contactRaw.pushName ?? null),
                 profilePicUrl: contactRaw.profilePicUrl ?? null,
               });
             }
@@ -1977,7 +2009,7 @@ export class BaileysStartupService extends ChannelStartupService {
         try {
           if (!this.endSession) {
             const database = this.configService.get<Database>('DATABASE');
-            const settings = this.currentSettings();
+            const settings = memoriaCurtaLigada() ? this.currentSettings() : await this.findSettings();
 
             if (events.call) {
               const call = events.call[0];
@@ -4839,7 +4871,42 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  // Carrega de uma vez as conversas e os contatos do número (2 leituras), para a primeira mensagem de
+  // cada conversa não precisar ir ao banco. Renovado no máximo a cada 24h; falha não impede nada.
+  private async loadMemos(force = false) {
+    if (!memoriaCurtaLigada()) return;
+    const now = Date.now();
+    if (!force && now - this.memoLoadedAt < 24 * 60 * 60 * 1000) return;
+    this.memoLoadedAt = now;
+    try {
+      const [chats, contacts] = await Promise.all([
+        this.prismaRepository.chat.findMany({
+          where: { instanceId: this.instanceId },
+          select: { id: true, remoteJid: true, name: true, unreadMessages: true },
+          take: 20000,
+        }),
+        this.prismaRepository.contact.findMany({
+          where: { instanceId: this.instanceId },
+          select: { remoteJid: true, pushName: true, profilePicUrl: true },
+          take: 20000,
+        }),
+      ]);
+      const day = 24 * 60 * 60 * 1000;
+      this.chatMemo.loadComplete(
+        chats.map((c) => [c.remoteJid, { id: c.id, name: c.name, unreadZero: c.unreadMessages === 0 }]),
+        day,
+      );
+      this.contactMemo.loadComplete(
+        contacts.map((c) => [c.remoteJid, { pushName: c.pushName ?? null, profilePicUrl: c.profilePicUrl ?? null }]),
+        day,
+      );
+    } catch {
+      this.logger.warn('memória de conversas: carga adiada, banco indisponível');
+    }
+  }
+
   private async findChatMemo(remoteJid: string) {
+    if (!this.chatMemo.isComplete()) await this.loadMemos();
     const known = this.chatMemo.get(remoteJid);
     if (known !== undefined) return known;
     const row = await this.prismaRepository.chat.findFirst({
@@ -4852,6 +4919,7 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   private async findContactMemo(remoteJid: string) {
+    if (!this.contactMemo.isComplete()) await this.loadMemos();
     const known = this.contactMemo.get(remoteJid);
     if (known !== undefined) return known;
     const row = await this.prismaRepository.contact.findFirst({

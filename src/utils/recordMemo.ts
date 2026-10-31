@@ -8,8 +8,20 @@
 //   então qualquer divergência se corrige sozinha;
 // - quem grava o mesmo registro por outro caminho chama `delete` para a próxima leitura ir ao banco.
 
+/**
+ * Interruptor de reversão: CONECTOR_MEMORIA_CURTA=false desliga a memória curta e a leitura das
+ * configurações em memória (o conector volta a consultar o banco a cada evento), SEM desligar as
+ * proteções do crachá nem o filtro do log. É o caminho de volta que não reabre risco.
+ */
+export const memoriaCurtaLigada = () => process.env.CONECTOR_MEMORIA_CURTA !== 'false';
+
 export class RecordMemo<V> {
   private readonly map = new Map<string, { value: V; at: number }>();
+  // Lista completa: carregada de uma vez (todas as conversas ou contatos do número). Enquanto vale,
+  // "não está na memória" quer dizer "não existe no banco", sem consultar. Chaves alteradas por outro
+  // caminho (delete) voltam a ser lidas do banco.
+  private completeUntil = 0;
+  private readonly mustRead = new Set<string>();
 
   constructor(
     private readonly maxEntries = 5000,
@@ -19,9 +31,12 @@ export class RecordMemo<V> {
 
   /** `undefined` = não sabe (ir ao banco). Qualquer outro valor, inclusive `null`, é resposta guardada. */
   get(key: string): V | undefined {
+    if (!memoriaCurtaLigada()) return undefined;
+    if (this.mustRead.has(key)) return undefined;
+    const complete = this.isComplete();
     const hit = this.map.get(key);
-    if (!hit) return undefined;
-    if (this.now() - hit.at > this.ttlMs) {
+    if (!hit) return complete ? (null as V) : undefined;
+    if (!complete && this.now() - hit.at > this.ttlMs) {
       this.map.delete(key);
       return undefined;
     }
@@ -29,20 +44,42 @@ export class RecordMemo<V> {
   }
 
   set(key: string, value: V): void {
+    this.mustRead.delete(key);
     this.map.delete(key);
     this.map.set(key, { value, at: this.now() });
     while (this.map.size > this.maxEntries) {
       const oldest = this.map.keys().next().value;
       this.map.delete(oldest);
+      this.completeUntil = 0; // não cabe tudo: deixa de ser lista completa
     }
   }
 
   delete(key: string | null | undefined): void {
-    if (key) this.map.delete(key);
+    if (!key) return;
+    this.map.delete(key);
+    if (this.isComplete()) this.mustRead.add(key);
+  }
+
+  /** Carrega a lista completa. Só vale se couber inteira; senão fica como memória comum. */
+  loadComplete(entries: Array<[string, V]>, validForMs: number): boolean {
+    this.clear();
+    if (entries.length >= this.maxEntries) {
+      for (const [k, v] of entries.slice(0, this.maxEntries)) this.set(k, v);
+      return false;
+    }
+    for (const [k, v] of entries) this.set(k, v);
+    this.completeUntil = this.now() + validForMs;
+    return true;
+  }
+
+  isComplete(): boolean {
+    return this.completeUntil > this.now();
   }
 
   clear(): void {
     this.map.clear();
+    this.mustRead.clear();
+    this.completeUntil = 0;
   }
 
   get size(): number {
