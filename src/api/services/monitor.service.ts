@@ -396,6 +396,7 @@ export class WAMonitoringService {
 
         this.clearDelInstanceTime(instanceName);
 
+        await (this.waInstances[instanceName] as any)?.discardPendingWrites?.();
         this.cleaningUp(instanceName);
         this.cleaningStoreData(instanceName);
       } finally {

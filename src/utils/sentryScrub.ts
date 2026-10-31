@@ -7,6 +7,8 @@
 //
 // Regra deste arquivo: só apaga; não lê, não guarda e não escreve nada.
 
+import { redactArgs } from './consoleGuard';
+
 const SECRET_HEADERS = new Set(['apikey', 'authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization']);
 
 type WithRequest = {
@@ -32,4 +34,22 @@ export function scrubRequest<T extends WithRequest>(event: T): T {
     }
   }
   return event;
+}
+
+type ConsoleBreadcrumb = {
+  category?: string;
+  message?: string;
+  data?: { arguments?: unknown[] } & Record<string, unknown>;
+};
+
+/** Linha de console guardada pelo monitor: se levava sessão ou bytes, vai só o aviso. */
+export function scrubBreadcrumb<T extends ConsoleBreadcrumb>(breadcrumb: T): T {
+  if (breadcrumb?.category !== 'console' || !Array.isArray(breadcrumb.data?.arguments)) return breadcrumb;
+  const args = breadcrumb.data.arguments;
+  const safe = redactArgs(args);
+  if (safe !== args) {
+    breadcrumb.data.arguments = safe;
+    breadcrumb.message = safe.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');
+  }
+  return breadcrumb;
 }

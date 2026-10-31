@@ -7,6 +7,8 @@ import { AuthenticationState, BufferJSON, initAuthCreds, WAProto as proto } from
 import fs from 'fs/promises';
 import path from 'path';
 
+import { CredsCopies, loadCreds, makeSaveCreds } from './credsStore';
+
 const fixFileName = (file: string): string | undefined => {
   if (!file) {
     return undefined;
@@ -53,6 +55,27 @@ export async function getAuthKey(sessionId: string): Promise<any> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Crachá da sessão lido do banco do conector. Devolve null só quando a linha não existe; erro do
+ * banco sobe. Antes, erro virava "não existe" e o conector criava um crachá novo (QR), que podia ser
+ * gravado por cima do verdadeiro quando o banco voltasse.
+ */
+export async function readCredsFromDatabase(sessionId: string): Promise<any | null> {
+  const row = await prismaRepository.session.findUnique({ where: { sessionId } });
+  if (!row?.creds) return null;
+  return JSON.parse(JSON.parse(row.creds), BufferJSON.reviver);
+}
+
+/** Grava o crachá no banco do conector no mesmo formato de sempre. Erro sobe. */
+export async function writeCredsToDatabase(sessionId: string, creds: any): Promise<void> {
+  const value = JSON.stringify(JSON.stringify(creds, BufferJSON.replacer));
+  await prismaRepository.session.upsert({
+    where: { sessionId },
+    create: { sessionId, creds: value },
+    update: { creds: value },
+  });
 }
 
 async function deleteAuthKey(sessionId: string): Promise<any> {
@@ -166,10 +189,23 @@ export default async function useMultiFileAuthStatePrisma(
     await deleteAuthKey(sessionId);
   }
 
-  let creds = await readData('creds');
+  // Crachá: principal no banco, cópia de segurança no Redis (ver utils/credsStore). Erro do banco
+  // interrompe aqui (a conexão não abre e tenta de novo depois) em vez de virar QR.
+  const copies: CredsCopies = {
+    readDb: () => readCredsFromDatabase(sessionId),
+    writeDb: (c) => writeCredsToDatabase(sessionId, c),
+    ...(configService.get<CacheConf>('CACHE').REDIS.ENABLED
+      ? {
+          readRedis: () => cache.hGetStrict(sessionId, 'creds'),
+          writeRedis: (c) => cache.hSet(sessionId, 'creds', c),
+        }
+      : {}),
+  };
+  const save = makeSaveCreds(copies, 'db', logger, sessionId);
+  let creds = await loadCreds(copies, 'db', logger, sessionId);
   if (!creds) {
     creds = initAuthCreds();
-    await writeData(creds, 'creds');
+    await save(creds);
   }
 
   return {
@@ -205,7 +241,7 @@ export default async function useMultiFileAuthStatePrisma(
       },
     },
     saveCreds: () => {
-      return writeData(creds, 'creds');
+      return save(creds);
     },
 
     removeCreds,

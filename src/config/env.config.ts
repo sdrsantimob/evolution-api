@@ -314,6 +314,7 @@ export type Webhook = {
 export type Pusher = { ENABLED: boolean; GLOBAL?: GlobalPusher; EVENTS: EventsPusher };
 export type ConfigSessionPhone = { CLIENT: string; NAME: string };
 export type QrCode = { LIMIT: number; COLOR: string };
+export type EvolutionBotConf = { ENABLED: boolean };
 export type Typebot = { ENABLED: boolean; API_VERSION: string; SEND_MEDIA_BASE64: boolean };
 export type Chatwoot = {
   ENABLED: boolean;
@@ -411,6 +412,7 @@ export interface Env {
   PUSHER: Pusher;
   CONFIG_SESSION_PHONE: ConfigSessionPhone;
   QRCODE: QrCode;
+  EVOLUTION_BOT: EvolutionBotConf;
   TYPEBOT: Typebot;
   CHATWOOT: Chatwoot;
   OPENAI: Openai;
@@ -803,6 +805,11 @@ export class ConfigService {
       QRCODE: {
         LIMIT: Number.parseInt(process.env.QRCODE_LIMIT) || 30,
         COLOR: process.env.QRCODE_COLOR || '#198754',
+      },
+      // O robô de respostas embutido consultava o banco 3 vezes a cada mensagem recebida, mesmo sem uso.
+      // Nasce desligado; ligar com EVOLUTION_BOT_ENABLED=true.
+      EVOLUTION_BOT: {
+        ENABLED: process.env?.EVOLUTION_BOT_ENABLED === 'true',
       },
       TYPEBOT: {
         ENABLED: process.env?.TYPEBOT_ENABLED === 'true',

@@ -139,13 +139,14 @@ export class ChannelStartupService {
     this.localWebhook.webhookBase64 = data?.webhookBase64;
   }
 
-  public async loadSettings() {
-    const data = await this.prismaRepository.setting.findUnique({
-      where: {
-        instanceId: this.instanceId,
-      },
-    });
+  // As configurações do número ficam em memória e são a fonte de leitura dos eventos do WhatsApp:
+  // ler o banco a cada evento mantinha o banco do conector acordado sem parar. A memória é
+  // renovada a partir da linha que o banco devolve na gravação (setSettings), então nunca guarda
+  // um valor que não foi gravado. Se a leitura inicial falhar, tenta de novo no máximo a cada minuto.
+  private settingsLoaded = false;
+  private settingsLastAttempt = 0;
 
+  private applySettings(data: any) {
     this.localSettings.rejectCall = data?.rejectCall;
     this.localSettings.msgCall = data?.msgCall;
     this.localSettings.groupsIgnore = data?.groupsIgnore;
@@ -156,8 +157,31 @@ export class ChannelStartupService {
     this.localSettings.wavoipToken = data?.wavoipToken;
   }
 
+  /** Grava o que estiver pendente antes de uma leitura (sobrescrito no canal WhatsApp). */
+  public async flushPendingWrites(): Promise<void> {}
+
+  public async loadSettings() {
+    this.settingsLastAttempt = Date.now();
+    const data = await this.prismaRepository.setting.findUnique({
+      where: {
+        instanceId: this.instanceId,
+      },
+    });
+
+    this.applySettings(data);
+    this.settingsLoaded = true;
+  }
+
+  /** Configurações para os eventos, sem ir ao banco. Mesmo formato de findSettings. */
+  public currentSettings() {
+    if (!this.settingsLoaded && Date.now() - this.settingsLastAttempt > 60_000) {
+      this.loadSettings().catch(() => this.logger.warn('settings: leitura adiada, banco indisponível'));
+    }
+    return { ...this.localSettings };
+  }
+
   public async setSettings(data: SettingsDto) {
-    await this.prismaRepository.setting.upsert({
+    const saved = await this.prismaRepository.setting.upsert({
       where: {
         instanceId: this.instanceId,
       },
@@ -184,14 +208,8 @@ export class ChannelStartupService {
       },
     });
 
-    this.localSettings.rejectCall = data?.rejectCall;
-    this.localSettings.msgCall = data?.msgCall;
-    this.localSettings.groupsIgnore = data?.groupsIgnore;
-    this.localSettings.alwaysOnline = data?.alwaysOnline;
-    this.localSettings.readMessages = data?.readMessages;
-    this.localSettings.readStatus = data?.readStatus;
-    this.localSettings.syncFullHistory = data?.syncFullHistory;
-    this.localSettings.wavoipToken = data?.wavoipToken;
+    this.applySettings(saved);
+    this.settingsLoaded = true;
 
     if (this.localSettings.wavoipToken && this.localSettings.wavoipToken.length > 0) {
       this.client.ws.close();
@@ -498,6 +516,7 @@ export class ChannelStartupService {
   }
 
   public async fetchContacts(query: Query<Contact>) {
+    await this.flushPendingWrites(); // agenda/lista sempre com tudo gravado
     const where: any = {
       instanceId: this.instanceId,
     };
@@ -717,6 +736,7 @@ export class ChannelStartupService {
   }
 
   public async fetchChats(query: any) {
+    await this.flushPendingWrites(); // agenda/lista sempre com tudo gravado
     const remoteJid = query?.where?.remoteJid
       ? query?.where?.remoteJid.includes('@')
         ? query.where?.remoteJid
