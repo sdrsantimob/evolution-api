@@ -36,6 +36,17 @@ export class ChatController {
   }
   // [WA-37:fim]
 
+  // [WA-70:inicio] Histórico antigo de UM grupo, pedido ao celular pela conexão dona da rota.
+  // Só a conexão por aparelho sabe pedir; nas demais a resposta é "sem conexão".
+  public async requestGroupHistory({ instanceName }: InstanceDto, body: unknown) {
+    const instance = this.waMonitor.waInstances[instanceName] as {
+      requestGroupHistory?: (body: unknown) => Promise<unknown>;
+    };
+    if (typeof instance?.requestGroupHistory !== 'function') return { outcome: 'offline' };
+    return await instance.requestGroupHistory(body);
+  }
+  // [WA-70:fim]
+
   public async readMessage({ instanceName }: InstanceDto, data: ReadMessageDto) {
     return await this.waMonitor.waInstances[instanceName].markMessageAsRead(data);
   }

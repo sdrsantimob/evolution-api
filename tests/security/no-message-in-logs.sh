@@ -135,6 +135,31 @@ grep -q "entity.parse.failed" "$PRINCIPAL" 2>/dev/null || { echo "FALHA: [WA-37]
 # A consulta só roda com o registro da biblioteca em nível silencioso: o serviço entrega o nível à porta.
 trecho_wa37 "$BAILEYS" | grep -qE 'lidLookupGate\.run\(.*this\.logBaileys\)' || { echo "FALHA: [WA-37] a consulta do identificador não informa o nível de registro da biblioteca à porta"; falhas=$((falhas+1)); }
 
+# 9) [WA-70] o pedido de histórico antigo de um grupo não escreve em log, não grava em banco, cache,
+#    arquivo ou sessão, só aceita endereço de grupo e só roda com o registro da biblioteca silencioso.
+GRUPOHIST=src/utils/groupHistoryRequest.ts
+[ -f "$GRUPOHIST" ] || { echo "FALHA: $GRUPOHIST não existe (o guard perdeu o alvo — atualize a lista)"; falhas=$((falhas+1)); }
+trecho_wa70() { # $1 = arquivo
+    awk '/\[WA-70:inicio\]/{d=1} d{print FILENAME":"FNR": "$0} /\[WA-70:fim\]/{d=0}' "$1" \
+        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'
+}
+for f in "$BAILEYS" "$ROTAS" "$CONTROLE"; do
+    ini=$(grep -c '\[WA-70:inicio\]' "$f" 2>/dev/null); fim=$(grep -c '\[WA-70:fim\]' "$f" 2>/dev/null)
+    if [ "${ini:-0}" -lt 1 ] || [ "${ini:-0}" -ne "${fim:-0}" ]; then
+        echo "FALHA: marcadores [WA-70:inicio]/[WA-70:fim] ausentes ou desbalanceados em $f — o guard perdeu o alvo"; falhas=$((falhas+1))
+    fi
+    acusar "[WA-70] trecho do histórico de grupo escreve em log ($f)" < <(trecho_wa70 "$f" | grep -E "$ESCREVE")
+    acusar "[WA-70] trecho do histórico de grupo grava, usa cache/sessão ou o validador que escreve em log ($f)" < <(trecho_wa70 "$f" | grep -iE "$GUARDA_WA37")
+done
+acusar "[WA-70] $GRUPOHIST escreve em log" < <(grep -nE "$ESCREVE" "$GRUPOHIST" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+acusar "[WA-70] $GRUPOHIST grava, usa cache/sessão" < <(grep -niE "$GUARDA_WA37" "$GRUPOHIST" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+acusar "[WA-70] $GRUPOHIST importa algo além da regra de nível de registro" < <(grep -nE "^import .* from '" "$GRUPOHIST" 2>/dev/null | grep -vE "from './lidLookup';")
+grep -qF 'const GROUP_JID = /^[0-9-]{6,64}@g\.us$/;' "$GRUPOHIST" 2>/dev/null || { echo "FALHA: [WA-70] $GRUPOHIST deixou de aceitar SÓ endereço de grupo"; falhas=$((falhas+1)); }
+trecho_wa70 "$BAILEYS" | grep -qE 'groupHistoryGate\.run\(.*this\.logBaileys\)' || { echo "FALHA: [WA-70] o pedido de histórico de grupo não informa o nível de registro da biblioteca à porta"; falhas=$((falhas+1)); }
+fora_wa70=$(awk '/\[WA-70:inicio\]/{d=1} !d{print FILENAME":"FNR": "$0} /\[WA-70:fim\]/{d=0}' "$BAILEYS" | grep -E 'fetchMessageHistory|groupHistoryGate' | grep -v "text == 'onDemandHistSync'" | grep -vE 'onDemandHistSync|fetchMessageHistory\(50, received\.key')
+acusar "[WA-70] pedido de histórico ao celular usado fora do trecho marcado" < <(printf '%s' "$fora_wa70")
+grep -qE "text == 'onDemandHistSync' && received\.key\?\.fromMe === true" "$BAILEYS" || { echo "FALHA: [WA-70] o gatilho de texto onDemandHistSync voltou a aceitar mensagem de outra pessoa"; falhas=$((falhas+1)); }
+
 # 6) o guard não pode voltar a contar falha dentro de subshell
 if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$ESTE" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
     echo "FALHA: este guard chama \`acusar\` no fim de um pipe — a falha não seria contada"
