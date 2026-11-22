@@ -119,3 +119,19 @@ export class GroupHistoryGate {
     }
   }
 }
+
+// O pedido no formato do WhatsApp (`HistorySyncOnDemandRequest`), com o identificador da própria
+// conta (`accountLid`), que a função pronta da biblioteca não preenche. Só a âncora e a conta
+// entram; nada do conteúdo. O identificador vai sem o número do aparelho (`:NN`).
+export function buildOnDemandRequest(anchor: GroupHistoryAnchor, accountLid?: unknown) {
+  const req: Record<string, unknown> = {
+    chatJid: anchor.key.remoteJid,
+    oldestMsgId: anchor.key.id,
+    oldestMsgFromMe: anchor.key.fromMe,
+    oldestMsgTimestampMs: anchor.timestampMs,
+    onDemandMsgCount: anchor.count,
+  };
+  const lid = typeof accountLid === 'string' ? accountLid.replace(/:\d+(?=@)/, '') : '';
+  if (/^[0-9]{5,20}@lid$/.test(lid)) req.accountLid = lid;
+  return req;
+}
