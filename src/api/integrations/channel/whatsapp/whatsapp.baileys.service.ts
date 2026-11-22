@@ -83,6 +83,7 @@ import { createId as cuid } from '@paralleldrive/cuid2';
 import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
+import { GroupHistoryGate, GroupHistoryResult } from '@utils/groupHistoryRequest';
 import {
   attachPhone,
   countChatAddresses,
@@ -326,6 +327,10 @@ export class BaileysStartupService extends ChannelStartupService {
   // intervalo mínimo. Só memória (a hora da última consulta); nenhum número fica aqui.
   private readonly lidLookupGate = new LidLookupGate();
   // [WA-37:fim]
+  // [WA-70:inicio] Porta do pedido de histórico antigo de UM grupo ao celular: um por vez, com
+  // intervalo mínimo. Só memória; nenhum endereço ou id fica aqui.
+  private readonly groupHistoryGate = new GroupHistoryGate();
+  // [WA-70:fim]
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
 
@@ -3696,6 +3701,20 @@ export class BaileysStartupService extends ChannelStartupService {
     return this.lidLookupGate.run(data?.number, exec, this.logBaileys);
   }
   // [WA-37:fim]
+
+  // [WA-70:inicio] Pede ao celular as mensagens de UM grupo anteriores à mensagem âncora. O que o
+  // celular devolver chega pelo aviso de histórico de sempre; aqui só sai o pedido. Nada é gravado
+  // na sessão, em banco ou em cache, e este serviço não escreve nada. Sem conexão aberta ou com o
+  // registro detalhado da biblioteca ligado, não pede.
+  public async requestGroupHistory(body: unknown): Promise<GroupHistoryResult> {
+    const client = this.stateConnection?.state === 'open' ? this.client : null;
+    const exec = client
+      ? (count: number, key: Parameters<typeof client.fetchMessageHistory>[1], ts: number) =>
+          client.fetchMessageHistory(count, key, ts)
+      : null;
+    return this.groupHistoryGate.run(body, exec, this.logBaileys);
+  }
+  // [WA-70:fim]
 
   public async whatsappNumber(data: WhatsAppNumberDto) {
     const jids: {

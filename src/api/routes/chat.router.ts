@@ -81,6 +81,20 @@ export class ChatRouter extends RouterBroker {
         return res.status(HttpStatus.OK).json(result);
       })
       // [WA-37:fim]
+      // [WA-70:inicio] Histórico antigo de UM grupo, pedido ao celular. Âncora no corpo (nunca no
+      // endereço); a rota não passa pelo validador comum (ele escreve o erro em registro) e nenhuma
+      // falha sobe para o tratador geral. A resposta é sempre 200 e leva só o desfecho.
+      .post(this.routerPath('requestGroupHistory'), ...guards, async (req, res) => {
+        let result: unknown = { outcome: 'failed' };
+        try {
+          result = await chatController.requestGroupHistory(req.params as unknown as InstanceDto, req.body);
+        } catch {
+          result = { outcome: 'failed' };
+        }
+
+        return res.status(HttpStatus.OK).json(result);
+      })
+      // [WA-70:fim]
       .post(this.routerPath('markMessageAsRead'), ...guards, async (req, res) => {
         const response = await this.dataValidate<ReadMessageDto>({
           request: req,
