@@ -83,7 +83,7 @@ import { createId as cuid } from '@paralleldrive/cuid2';
 import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
-import { GroupHistoryGate, GroupHistoryResult } from '@utils/groupHistoryRequest';
+import { buildOnDemandRequest, GroupHistoryGate, GroupHistoryResult } from '@utils/groupHistoryRequest';
 import {
   attachPhone,
   countChatAddresses,
@@ -93,6 +93,7 @@ import {
   newHistoryStats,
   withBothAddresses,
 } from '@utils/historyPhoneByLid';
+import { applyHistorySyncCapabilities } from '@utils/historySyncCapabilities';
 import { LidLookupGate, LidLookupResult } from '@utils/lidLookup';
 import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
@@ -241,6 +242,11 @@ async function getVideoDuration(input: Buffer | string | Readable): Promise<numb
 
   return Math.round(parseFloat(duration));
 }
+
+// [WA-70:inicio] O aparelho vinculado passa a declarar, no PAREAMENTO, que recebe histórico de grupo
+// e histórico sob demanda (ver src/utils/historySyncCapabilities.ts). Uma vez, ao carregar.
+applyHistorySyncCapabilities(proto as unknown as Parameters<typeof applyHistorySyncCapabilities>[0]);
+// [WA-70:fim]
 
 export class BaileysStartupService extends ChannelStartupService {
   private messageProcessor = new BaileysMessageProcessor();
@@ -3710,9 +3716,17 @@ export class BaileysStartupService extends ChannelStartupService {
   // registro detalhado da biblioteca ligado, não pede.
   public async requestGroupHistory(body: unknown): Promise<GroupHistoryResult> {
     const client = this.stateConnection?.state === 'open' ? this.client : null;
+    // O pedido sai montado aqui (e não pela função pronta da biblioteca) para levar também o
+    // identificador da própria conta, que o formato do WhatsApp prevê.
     const exec = client
-      ? (count: number, key: Parameters<typeof client.fetchMessageHistory>[1], ts: number) =>
-          client.fetchMessageHistory(count, key, ts)
+      ? (count: number, key: { remoteJid: string; id: string; fromMe: boolean }, ts: number) =>
+          client.sendPeerDataOperationMessage({
+            historySyncOnDemandRequest: buildOnDemandRequest(
+              { key, timestampMs: ts, count },
+              client.authState?.creds?.me?.lid,
+            ),
+            peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.HISTORY_SYNC_ON_DEMAND,
+          })
       : null;
     return this.groupHistoryGate.run(body, exec, this.logBaileys);
   }

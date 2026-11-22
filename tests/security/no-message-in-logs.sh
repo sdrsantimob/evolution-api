@@ -160,6 +160,15 @@ fora_wa70=$(awk '/\[WA-70:inicio\]/{d=1} !d{print FILENAME":"FNR": "$0} /\[WA-70
 acusar "[WA-70] pedido de histórico ao celular usado fora do trecho marcado" < <(printf '%s' "$fora_wa70")
 grep -qE "text == 'onDemandHistSync' && received\.key\?\.fromMe === true" "$BAILEYS" || { echo "FALHA: [WA-70] o gatilho de texto onDemandHistSync voltou a aceitar mensagem de outra pessoa"; falhas=$((falhas+1)); }
 
+# 10) [WA-70] a declaração de histórico do aparelho vinculado só acrescenta os dois campos, não
+#     escreve em log, não grava nada e não importa nada.
+CAPAC=src/utils/historySyncCapabilities.ts
+[ -f "$CAPAC" ] || { echo "FALHA: $CAPAC não existe (o guard perdeu o alvo — atualize a lista)"; falhas=$((falhas+1)); }
+acusar "[WA-70] $CAPAC escreve em log" < <(grep -nE "$ESCREVE" "$CAPAC" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+acusar "[WA-70] $CAPAC grava, usa cache/sessão" < <(grep -niE "$GUARDA_WA37" "$CAPAC" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*//')
+acusar "[WA-70] $CAPAC importa algo" < <(grep -nE "^import " "$CAPAC" 2>/dev/null)
+grep -qF "Object.freeze({ supportGroupHistory: true, onDemandReady: true })" "$CAPAC" 2>/dev/null || { echo "FALHA: [WA-70] a declaração de histórico mudou além dos dois campos aprovados"; falhas=$((falhas+1)); }
+
 # 6) o guard não pode voltar a contar falha dentro de subshell
 if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$ESTE" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
     echo "FALHA: este guard chama \`acusar\` no fim de um pipe — a falha não seria contada"
