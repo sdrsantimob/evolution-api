@@ -1289,7 +1289,9 @@ export class BaileysStartupService extends ChannelStartupService {
               this.logger.verbose(`Message received from phone, id=${requestId}`);
             }
 
-            if (text == 'onDemandHistSync') {
+            // [WA-70] Só a mensagem do PRÓPRIO dono dispara o pedido de histórico: antes, qualquer
+            // pessoa que mandasse este texto fazia o celular do dono reenviar a conversa.
+            if (text == 'onDemandHistSync' && received.key?.fromMe === true) {
               const messageId = await this.client.fetchMessageHistory(50, received.key, received.messageTimestamp!);
               this.logger.verbose(`requested on-demand sync, id=${messageId}`);
             }

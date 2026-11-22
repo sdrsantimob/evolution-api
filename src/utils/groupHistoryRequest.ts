@@ -17,6 +17,10 @@
 //
 // Regra deste arquivo: nada aqui grava em banco, cache, arquivo ou sessão, e nada aqui escreve em
 // registro. A resposta diz só o desfecho — nunca o endereço do grupo nem o id da mensagem.
+//
+// O que este arquivo NÃO controla: o que o celular devolve passa pelo tratamento do histórico de
+// sempre, que grava no banco do conector SÓ se as gravações dele estiverem ligadas
+// (DATABASE_SAVE_DATA_HISTORIC / _CONTACTS / _CHATS, desligadas por padrão no .env.example, [SEG-84]).
 
 import { logLevelIsQuiet } from './lidLookup';
 

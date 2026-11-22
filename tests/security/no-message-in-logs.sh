@@ -158,6 +158,7 @@ grep -qF 'const GROUP_JID = /^[0-9-]{6,64}@g\.us$/;' "$GRUPOHIST" 2>/dev/null ||
 trecho_wa70 "$BAILEYS" | grep -qE 'groupHistoryGate\.run\(.*this\.logBaileys\)' || { echo "FALHA: [WA-70] o pedido de histórico de grupo não informa o nível de registro da biblioteca à porta"; falhas=$((falhas+1)); }
 fora_wa70=$(awk '/\[WA-70:inicio\]/{d=1} !d{print FILENAME":"FNR": "$0} /\[WA-70:fim\]/{d=0}' "$BAILEYS" | grep -E 'fetchMessageHistory|groupHistoryGate' | grep -v "text == 'onDemandHistSync'" | grep -vE 'onDemandHistSync|fetchMessageHistory\(50, received\.key')
 acusar "[WA-70] pedido de histórico ao celular usado fora do trecho marcado" < <(printf '%s' "$fora_wa70")
+grep -qE "text == 'onDemandHistSync' && received\.key\?\.fromMe === true" "$BAILEYS" || { echo "FALHA: [WA-70] o gatilho de texto onDemandHistSync voltou a aceitar mensagem de outra pessoa"; falhas=$((falhas+1)); }
 
 # 6) o guard não pode voltar a contar falha dentro de subshell
 if grep -nE '\|[[:space:]]*acusar[[:space:]]' "$ESTE" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
